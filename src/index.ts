@@ -16,6 +16,12 @@ import { describeError, WeixinError } from './errors.js';
 /** Cordis plugin identity. */
 export const name = 'weixin';
 
+/** Background failures remain visible even in profiles with no Cordis log exporter. */
+function report(ctx: Context, level: 'warn' | 'error', message: string): void {
+  ctx.logger[level](message);
+  console.error(message);
+}
+
 const optionsSchema = z.object({
   mode: z.enum(['disabled', 'login', 'run', 'status']).default('disabled'),
   stateDirectory: z.string().default(join(resolveDshHome(), 'weixin')),
@@ -77,7 +83,7 @@ export function apply(ctx: Context, input: Config): void {
       const task = (async () => {
         await mkdir(config.stateDirectory, { recursive: true, mode: 0o700 });
         const release = await lockfile.lock(await realpath(config.stateDirectory), { retries: 0, onCompromised: () => {
-          ctx.logger.error('weixin: account lock ownership was lost; channel is stopping.');
+          report(ctx, 'error', 'weixin: account lock ownership was lost; channel is stopping.');
           controller.abort(new WeixinError('STATE', 'account lock', 'Account ownership was lost; channel stopped.'));
         } });
         let store: Store | undefined;
@@ -87,14 +93,14 @@ export function apply(ctx: Context, input: Config): void {
             const auth = await login(api, config, controller.signal, terminalLoginIo);
             store = new Store(config.stateDirectory, auth.botId);
             await saveCredentials(config.stateDirectory, auth);
-            ctx.logger.info('weixin: 登录成功，凭据已保存在插件数据目录。启动配置好的 Web profile 以接收消息。');
+            console.log('weixin: 登录成功，凭据已保存在插件数据目录。启动配置好的 Web profile 以接收消息。');
             queueMicrotask(() => { ctx.get('appExit')?.(0); });
             return;
           }
           const auth = await readCredentials(config.stateDirectory, config.allowedApiHosts);
           store = new Store(config.stateDirectory, auth.botId);
           if (config.mode === 'status') {
-            ctx.logger.info(`weixin: authenticated; pending=${store.counts().pending}; unknown=${store.counts().unknown}`);
+            console.log(`weixin: authenticated; pending=${store.counts().pending}; unknown=${store.counts().unknown}`);
             queueMicrotask(() => { ctx.get('appExit')?.(0); });
             return;
           }
@@ -102,19 +108,19 @@ export function apply(ctx: Context, input: Config): void {
           if (!(await stat(workspaceRoot)).isDirectory()) throw new WeixinError('STATE', 'workspace', 'workspaceRoot must be an existing directory.');
           const driver = new DshDriver(ctx, store, { ...config, workspaceRoot });
           await driver.initialize();
-          ctx.logger.info('weixin: channel started; only explicitly allowed senders can run DSH tasks.');
+          console.error('weixin: channel started; only explicitly allowed senders can run DSH tasks.');
           try {
             await api.notify(auth, 'start', controller.signal);
-            await new Engine(api, auth, store, driver, config, message => ctx.logger.warn(`weixin: ${message}`)).run(controller.signal);
+            await new Engine(api, auth, store, driver, config, message => report(ctx, 'warn', `weixin: ${message}`)).run(controller.signal);
           } finally {
             await driver.close();
             try { await api.notify(auth, 'stop', AbortSignal.timeout(config.requestTimeoutMs)); }
-            catch (error) { ctx.logger.warn(`weixin: stop notification was not confirmed. ${describeError(error)}`); }
+            catch (error) { report(ctx, 'warn', `weixin: stop notification was not confirmed. ${describeError(error)}`); }
           }
         } finally { store?.close(); await release(); }
       })().catch((error: unknown) => {
         if (!controller.signal.aborted || error !== controller.signal.reason) {
-          ctx.logger.error(`weixin: channel stopped. ${describeError(error)}`);
+          report(ctx, 'error', `weixin: channel stopped. ${describeError(error)}`);
           if (config.mode !== 'run') queueMicrotask(() => { ctx.get('appExit')?.(1); });
         }
       });

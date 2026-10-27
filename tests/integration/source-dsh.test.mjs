@@ -23,6 +23,13 @@ test('source-built dsh loads the bundle and resumes a real Agent through the Mes
   const run = args => promisify(execFile)(bin, args, { env, cwd: workspace, timeout: 30000, maxBuffer: 2 ** 20 });
   await run(['web', '--dump-config']);
   await run(['plugin', '--profile', 'web', 'add', pluginRoot]);
+  await run(['plugin', '--profile', 'weixin-login', 'add', pluginRoot]);
+  const statusState = join(root, 'status-state'); await mkdir(statusState, { mode: 0o700 });
+  await writeFile(join(statusState, 'credentials.json'), JSON.stringify({ version: 1, token: 'fixture-not-live', botId: 'fixture-bot', userId: 'fixture-user', baseUrl: 'https://ilinkai.weixin.qq.com' }), { mode: 0o600 });
+  const statusPatch = join(root, 'status.patch.json');
+  await writeFile(statusPatch, JSON.stringify([{ id: 'hmr', disabled: true }, { id: 'weixin', config: { mode: 'status', stateDirectory: statusState } }]));
+  const statusResult = await run(['--profile', 'weixin-login', '--patch', statusPatch]);
+  assert.match(statusResult.stdout, /authenticated; pending=0; unknown=0/u);
   const patch = join(root, 'smoke.patch.json');
   const output = join(root, 'result.json');
   await writeFile(patch, JSON.stringify([

@@ -53,7 +53,7 @@ dsh web --patch /absolute/path/to/your/run.patch.yml
 
 默认 `permissionPreset: read-only`，并且 Agent 的审批策略固定为 `never`：需要额外批准的操作自动拒绝，不会通过微信放行，也不会自动提升权限。若明确选择 `workspace-write`，DSH 会使用该预设允许的工作区写入权限。不要仅为了消除错误而选择更高权限。
 
-电脑需要联网并持续运行 DSH。断网期间轮询会重试，已接收任务仍保存在本机；微信凭据失效（`-14`）时连接停止，需要重新扫码。日志不会输出 bot token、context token、原始接口响应或模型回复；终端二维码链接本身属于登录信息，不要公开分享。
+电脑需要联网并持续运行 DSH。断网期间轮询会重试，已接收任务仍保存在本机；微信凭据失效（`-14`）时连接停止，需要重新扫码。后台故障同时写入 stderr 和 Cordis 日志，即使 profile 没有日志 exporter 也能看到。日志不会输出 bot token、context token、原始接口响应或模型回复；终端二维码链接本身属于登录信息，不要公开分享。
 
 ## 持久化与失败语义
 
