@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tgz
+*.log
+.env*
+.dsh/
+*.sqlite*
+credentials.json
+*.lock/

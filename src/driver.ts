@@ -1,0 +1,143 @@
+import type { Context } from '@deepseek-ai/cordis';
+import { randomUUID } from 'node:crypto';
+import { brandString } from '@deepseek-ai/dsh-brand';
+import { installModelSelection } from '@deepseek-ai/dsh-agent';
+import type { AgentHandle, Agent } from '@deepseek-ai/dsh-agent';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval';
+import type { SessionId, SessionEvent } from '@deepseek-ai/dsh-session';
+import type {} from '@deepseek-ai/dsh-agent-default-model';
+import type {} from '@deepseek-ai/dsh-agent-preset-registry';
+import type {} from '@deepseek-ai/dsh-permission-presets';
+import type {} from '@deepseek-ai/dsh-workspace';
+import type {} from '@deepseek-ai/dsh-subagent';
+import type { AgentDriver } from './engine.js';
+import type { Store } from './store.js';
+import type { WeixinUserId } from './protocol.js';
+import { WeixinError } from './errors.js';
+
+export interface DriverOptions {
+  workspaceRoot: string;
+  agentPreset: string;
+  permissionPreset: string;
+  taskTimeoutMs: number;
+  provider?: string | undefined;
+  model?: string | undefined;
+}
+
+/** Creates only channel-owned Sessions; it never borrows a browser-owned live Agent. */
+export class DshDriver implements AgentDriver {
+  private readonly handles = new Map<WeixinUserId, AgentHandle>();
+  private readonly active = new Map<WeixinUserId, AbortController>();
+  private closing = false;
+  constructor(private readonly ctx: Context, private readonly store: Store, private readonly options: DriverOptions) {}
+
+  async initialize(): Promise<void> {
+    this.ctx.permissionPresets.resolve(this.options.permissionPreset);
+    await this.ctx.agentPresets.resolve(this.options.agentPreset);
+  }
+
+  private async handle(user: WeixinUserId, signal: AbortSignal): Promise<AgentHandle> {
+    if (this.closing) throw new WeixinError('AGENT', 'conversation', 'Channel is closing.');
+    const current = this.handles.get(user);
+    if (current) return current;
+    const existing = this.store.session(user);
+    const workspace = await this.ctx.workspaceRegistry.create(this.options.workspaceRoot);
+    const preset = (await this.ctx.agentPresets.resolve(this.options.agentPreset)).id;
+    const options = this.options.provider && this.options.model ? { provider: this.options.provider, model: this.options.model } : this.ctx.agentDefaultModel.currentSelection();
+    const selection = { current: options.provider && options.model ? { provider: options.provider, model: options.model } : undefined, assembled: undefined };
+    const setup = async (ctx: Context): Promise<void> => { installModelSelection(ctx, selection); await this.ctx.agentPresets.mount(ctx, preset); };
+    const id = brandString<SessionId>(existing ?? `weixin-${randomUUID()}`);
+    if (this.ctx.agents.get(id)) throw new WeixinError('AGENT', 'conversation', 'This Session is active under another owner; send /new to create another conversation.');
+    const handle = existing ? await this.ctx.agents.resume({ resumeSessionId: id, agentOptions: options, signal, setup }) :
+      await this.ctx.agents.create({ sessionId: id, agentOptions: options, signal, meta: { cwd: workspace.path, agentPreset: preset }, setup });
+    try {
+      signal.throwIfAborted();
+      if (handle.agent.session.header.cwd !== workspace.path) throw new WeixinError('AGENT', 'conversation', 'Saved Session belongs to another workspace; send /new.');
+      this.ctx.permissionPresets.set(handle.agent.session, this.options.permissionPreset);
+      setApprovalPolicy(handle.agent.session, 'never');
+      if (!existing) await workspace.attachSession(id);
+      await this.ctx.sessions.flush(handle.agent.session);
+      this.store.bind(user, id);
+      this.handles.set(user, handle);
+      return handle;
+    } catch (error) { await handle.dispose(); throw error; }
+  }
+
+  /** Submit logged user input, await root and child quiescence, then flush before delivery. */
+  async respond(user: WeixinUserId, text: string, signal: AbortSignal): Promise<string> {
+    const controller = new AbortController();
+    this.active.set(user, controller);
+    try { return await this.run(user, text, AbortSignal.any([signal, controller.signal, AbortSignal.timeout(this.options.taskTimeoutMs)])); }
+    catch (error) {
+      if (signal.aborted || error instanceof WeixinError) throw error;
+      throw new WeixinError('AGENT', 'DSH task', 'Task failed or reached taskTimeoutMs; inspect the local DSH Session.', false, { cause: error });
+    }
+    finally { this.active.delete(user); }
+  }
+
+  private async run(user: WeixinUserId, text: string, combined: AbortSignal): Promise<string> {
+    const { agent } = await this.handle(user, combined);
+    let reply = '';
+    let reason: SessionEvent<'turn/end'>['data']['reason'] | undefined;
+    let failure = false;
+    const offEvent = this.ctx.on('session/event', (session, event) => {
+      if (session !== agent.session) return;
+      if (event.type === 'assistant/message' && event.surfaceOp === 'append') {
+        const text = event.data.message.content.filter(item => item.type === 'text').map(item => item.text).join('');
+        if (text) reply = text;
+      }
+      if (event.type === 'turn/end') { reason = event.data.reason; failure = reason.kind === 'error'; }
+    });
+    const offError = this.ctx.on('agent/error', ({ agent: subject }) => { if (subject === agent) failure = true; });
+    let drain: Promise<void> = Promise.resolve();
+    const cancel = (): void => {
+      agent.cancel({ kind: 'user' });
+      drain = this.ctx.subagents.drainDescendants([agent]);
+      // The run finalizer retains and propagates the drain rejection after the idle wait.
+      void drain.catch((_error: unknown) => undefined);
+    };
+    combined.addEventListener('abort', cancel, { once: true });
+    try {
+      combined.throwIfAborted();
+      agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }));
+      while (true) {
+        await agent.whenIdle();
+        const seq = agent.session.seq;
+        if (!await this.ctx.subagents.waitForChildren(agent) && agent.status === 'idle' && agent.session.seq === seq) break;
+      }
+      await this.ctx.sessions.flush(agent.session);
+      await drain;
+      combined.throwIfAborted();
+      if (failure || reason?.kind !== 'completed') throw new WeixinError('AGENT', 'DSH task', 'Task did not complete; inspect the local Session.');
+      return reply;
+    } finally {
+      combined.removeEventListener('abort', cancel);
+      offEvent(); offError();
+      await drain;
+    }
+  }
+
+  cancel(user: WeixinUserId): void {
+    this.active.get(user)?.abort(new WeixinError('AGENT', 'DSH task', 'Task was stopped; completed effects are retained.'));
+    this.handles.get(user)?.agent.cancel({ kind: 'user' });
+  }
+  async reset(user: WeixinUserId): Promise<void> {
+    this.store.forget(user);
+    const handle = this.handles.get(user);
+    this.handles.delete(user);
+    if (handle) await handle.dispose();
+  }
+  async close(): Promise<void> {
+    this.closing = true;
+    for (const controller of this.active.values()) controller.abort();
+    const handles = [...this.handles.values()];
+    this.handles.clear();
+    const errors: unknown[] = [];
+    try { await this.ctx.subagents.drainDescendants(handles.map(handle => handle.agent)); }
+    catch (error) { errors.push(error); }
+    const results = await Promise.allSettled(handles.map(handle => handle.dispose()));
+    errors.push(...results.filter(result => result.status === 'rejected').map(result => result.reason));
+    if (errors.length) throw new AggregateError(errors, 'Weixin Agent cleanup failed.');
+  }
+}

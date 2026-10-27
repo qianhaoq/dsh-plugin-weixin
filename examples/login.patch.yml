@@ -1,0 +1,6 @@
+# Install the bundle into a separate base-backed profile before using this patch.
+- id: hmr
+  disabled: true
+- id: weixin
+  config:
+    mode: login

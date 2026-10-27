@@ -1,0 +1,7 @@
+# Replace workspaceRoot with an existing absolute directory on your computer.
+- id: weixin
+  config:
+    mode: run
+    workspaceRoot: /absolute/path/to/your/workspace
+    permissionPreset: read-only
+    agentPreset: standard

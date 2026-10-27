@@ -1,0 +1,5 @@
+- id: hmr
+  disabled: true
+- id: weixin
+  config:
+    mode: status

@@ -1,0 +1,6 @@
+The iLink request fields and QR exchange are implemented using the public
+Tencent/openclaw-weixin protocol implementation as a reference:
+https://github.com/Tencent/openclaw-weixin
+
+This package contains no vendored OpenClaw or Tencent plugin source code.
+WeChat, Tencent, DeepSeek and OpenClaw names identify their respective products.
