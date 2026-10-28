@@ -3,7 +3,7 @@
 先停止正在使用这个插件的 DSH 进程，再安装依赖、构建并重新启动。新版本继续使用原来的 `credentials.json`、`messages.sqlite` 和微信用户到 DSH Session 的映射，不要求删除数据或重新扫码；只有凭据确实不能恢复时才需要登录。
 
 ```sh
-cd /absolute/path/to/dsh-plugin-weixin
+cd /absolute/path/to/qh-dsh-weixin
 git pull --ff-only
 pnpm install --frozen-lockfile
 pnpm check

@@ -9,7 +9,7 @@
 | [pan17/dsh-wechat](https://github.com/pan17/dsh-wechat/tree/312e9834831ab840c3a48f88f0fe95ee33ef2cda) | `0.14.0`，`312e983` | 微信作为 DSH 第二客户端：多媒体、原生命令、审批与问题、流式输出、设置页。 |
 | [panqing0313/dsh-plugin-weixin](https://github.com/panqing0313/dsh-plugin-weixin/tree/74cad3e17e1aaf109a94214a26a722236399aa1a) | `0.9.10`，`74cad3e` | 多账号微信通道，并包含媒体、语音、提醒、订阅和个性化能力。 |
 | [xmanrui/dsh-weixin](https://github.com/xmanrui/dsh-weixin/tree/16ca866af80e8b95b2d73619579894e817095122) | `0.1.0`，`16ca866` | 较小的微信桥接和 Host/HTTP 客户端适配层，提供扫码管理。 |
-| `@qianhaoq/dsh-plugin-weixin` | 原始 `0.1.0` → 当前 `0.2.0` | 受限文字任务通道，强调明确授权、原生 Agent、持久化和失败恢复。 |
+| `@qianhaoq/qh-dsh-weixin` | 原始 `0.1.0` → 当前 `0.2.0` | 受限文字任务通道，强调明确授权、原生 Agent、持久化和失败恢复。 |
 
 DSH 集成验证使用本机源码提交 `22ddee3792402c3e70ec5f86a63c3e3e895a2f60`。插件声明的宿主范围仍是精确 `0.2.1-rc.3`；没有据此宣称兼容所有 DSH 版本。
 

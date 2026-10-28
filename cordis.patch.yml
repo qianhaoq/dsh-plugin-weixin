@@ -1,5 +1,5 @@
 - insert:
     - id: weixin
-      name: '@qianhaoq/dsh-plugin-weixin'
+      name: '@qianhaoq/qh-dsh-weixin'
       config:
         mode: disabled

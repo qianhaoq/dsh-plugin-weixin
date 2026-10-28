@@ -9,8 +9,8 @@ Version `0.2.0` targets DSH `0.2.1-rc.3` and Node.js 24.9+. Protocol fixtures co
 ## Install and connect
 
 ```sh
-gh repo clone qianhaoq/dsh-plugin-weixin
-cd dsh-plugin-weixin
+gh repo clone qianhaoq/qh-dsh-weixin
+cd qh-dsh-weixin
 pnpm install --frozen-lockfile
 pnpm test
 dsh plugin --profile web add "$PWD"

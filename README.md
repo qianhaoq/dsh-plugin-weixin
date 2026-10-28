@@ -11,8 +11,8 @@
 先安装可用的 `dsh`。源码安装方法见 [DSH README](https://github.com/deepseek-ai/deepseek-harness#run-from-source)。私有仓库请使用已登录 GitHub 的 `gh` 克隆：
 
 ```sh
-gh repo clone qianhaoq/dsh-plugin-weixin
-cd dsh-plugin-weixin
+gh repo clone qianhaoq/qh-dsh-weixin
+cd qh-dsh-weixin
 pnpm install --frozen-lockfile
 pnpm test
 
@@ -100,7 +100,7 @@ MVP1 入站支持文字＋图片：配文和多张图片按原顺序进入同一
 在没有启动 Web 的独立 profile 中查看本机状态：
 
 ```sh
-dsh --profile weixin-login --patch /absolute/path/to/dsh-plugin-weixin/examples/status.patch.yml
+dsh --profile weixin-login --patch /absolute/path/to/qh-dsh-weixin/examples/status.patch.yml
 ```
 
 这个命令与运行中的微信实例使用同一把排他锁；若提示锁已占用，使用微信 `/status` 或查看运行实例的日志。

@@ -1,5 +1,5 @@
 {
-  "name": "@qianhaoq/dsh-plugin-weixin",
+  "name": "@qianhaoq/qh-dsh-weixin",
   "version": "0.2.0",
   "description": "WeChat ClawBot text and inbound images for DeepSeek Harness over the iLink bot API",
   "type": "module",
@@ -7,7 +7,7 @@
   "author": "Hao Qian",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qianhaoq/dsh-plugin-weixin.git"
+    "url": "git+https://github.com/qianhaoq/qh-dsh-weixin.git"
   },
   "keywords": [
     "dsh-plugin",
