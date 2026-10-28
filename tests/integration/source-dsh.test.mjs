@@ -15,7 +15,8 @@ test('source-built dsh loads the bundle and resumes a real Agent through the Mes
   const cleanups = [() => rm(root, { recursive: true, force: true })];
   t.after(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); });
   const { startMockLlmServer } = await import(pathToFileURL(join(resolve(source), 'packages/test-support/llm-mock-server/lib/index.js')).href);
-  const model = await startMockLlmServer({ sequence: ['success'], repeatLast: true, successText: '微信桥接测试回复' });
+  const reply = '微信桥接测试回复。'.repeat(20);
+  const model = await startMockLlmServer({ sequence: ['success'], repeatLast: true, successText: reply });
   cleanups.push(() => model.close());
   const workspace = join(root, 'workspace'); await mkdir(workspace);
   const env = { ...process.env, DSH_HOME: join(root, 'home'), DSH_AGENTS_HOME: join(root, 'agents'), DSH_TELEMETRY_DISABLED: '1', DEEPSEEK_API_KEY: 'keyless-weixin-fixture', DEEPSEEK_BASE_URL: model.baseURL, NODE_NO_WARNINGS: '1' };
@@ -48,9 +49,11 @@ test('source-built dsh loads the bundle and resumes a real Agent through the Mes
     child.stdout.on('data', append); child.stderr.on('data', append);
   });
   const transcript = JSON.parse(await readFile(output, 'utf8'));
-  assert.deepEqual(transcript, { replies: ['微信桥接测试回复', '微信桥接测试回复'], sessionReused: true });
-  assert.ok(model.requests.length >= 2);
-  assert.ok(JSON.stringify(model.requests.at(-1).body).includes('微信第一条测试消息'));
+  assert.deepEqual(transcript, { replies: [reply, reply], sessionReused: true, channelContextLogged: true, pipelineReplies: [reply, reply], runtimeSessionReused: true, cursorResumed: true });
+  assert.ok(model.requests.length >= 4);
+  assert.ok(JSON.stringify(model.requests[0].body).includes('WeChat ClawBot'));
+  assert.ok(model.requests.some(request => JSON.stringify(request.body).includes('微信第一条测试消息')));
+  assert.ok(JSON.stringify(model.requests.at(-1).body).includes('流水线第1条测试消息'));
   child.kill('SIGINT');
   const ending = await exited;
   assert.equal(ending.signal, null);

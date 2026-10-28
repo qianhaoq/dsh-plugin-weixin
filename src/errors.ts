@@ -17,5 +17,6 @@ export class WeixinError extends Error {
  * @returns A summary with no model output, user message, token, or server response body.
  */
 export function describeError(error: unknown): string {
+  if (error instanceof AggregateError) return `Account operation or cleanup failed: ${error.errors.map((cause: unknown) => describeError(cause)).join('; ')}`;
   return error instanceof WeixinError ? `${error.code}: ${error.message}` : 'Unexpected failure; inspect the local runtime and restart the channel.';
 }

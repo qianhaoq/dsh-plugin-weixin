@@ -11,10 +11,12 @@ import type {} from '@deepseek-ai/dsh-agent-preset-registry';
 import type {} from '@deepseek-ai/dsh-permission-presets';
 import type {} from '@deepseek-ai/dsh-workspace';
 import type {} from '@deepseek-ai/dsh-subagent';
+import type {} from '@deepseek-ai/dsh-system-prompt';
 import type { AgentDriver } from './engine.js';
 import type { Store } from './store.js';
 import type { WeixinUserId } from './protocol.js';
 import { WeixinError } from './errors.js';
+import { channelGuide } from './commands.js';
 
 export interface DriverOptions {
   workspaceRoot: string;
@@ -46,11 +48,19 @@ export class DshDriver implements AgentDriver {
     const preset = (await this.ctx.agentPresets.resolve(this.options.agentPreset)).id;
     const options = this.options.provider && this.options.model ? { provider: this.options.provider, model: this.options.model } : this.ctx.agentDefaultModel.currentSelection();
     const selection = { current: options.provider && options.model ? { provider: options.provider, model: options.model } : undefined, assembled: undefined };
-    const setup = async (ctx: Context): Promise<void> => { installModelSelection(ctx, selection); await this.ctx.agentPresets.mount(ctx, preset); };
+    const setup = async (ctx: Context): Promise<void> => {
+      installModelSelection(ctx, selection);
+      await this.ctx.agentPresets.mount(ctx, preset);
+      ctx.systemPrompt.section({
+        name: 'weixin:channel', order: ctx.systemPrompt.getSectionOrder('WEB_SURFACE'),
+        text: channelGuide,
+      });
+    };
     const id = brandString<SessionId>(existing ?? `weixin-${randomUUID()}`);
     if (this.ctx.agents.get(id)) throw new WeixinError('AGENT', 'conversation', 'This Session is active under another owner; send /new to create another conversation.');
     const handle = existing ? await this.ctx.agents.resume({ resumeSessionId: id, agentOptions: options, signal, setup }) :
       await this.ctx.agents.create({ sessionId: id, agentOptions: options, signal, meta: { cwd: workspace.path, agentPreset: preset }, setup });
+    this.handles.set(user, handle);
     try {
       signal.throwIfAborted();
       if (handle.agent.session.header.cwd !== workspace.path) throw new WeixinError('AGENT', 'conversation', 'Saved Session belongs to another workspace; send /new.');
@@ -59,9 +69,13 @@ export class DshDriver implements AgentDriver {
       if (!existing) await workspace.attachSession(id);
       await this.ctx.sessions.flush(handle.agent.session);
       this.store.bind(user, id);
-      this.handles.set(user, handle);
       return handle;
-    } catch (error) { await handle.dispose(); throw error; }
+    } catch (error) {
+      try { await handle.dispose(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], 'Agent setup and rollback failed.'); }
+      this.handles.delete(user);
+      throw error;
+    }
   }
 
   /** Submit logged user input, await root and child quiescence, then flush before delivery. */
@@ -120,13 +134,12 @@ export class DshDriver implements AgentDriver {
 
   cancel(user: WeixinUserId): void {
     this.active.get(user)?.abort(new WeixinError('AGENT', 'DSH task', 'Task was stopped; completed effects are retained.'));
-    this.handles.get(user)?.agent.cancel({ kind: 'user' });
   }
   async reset(user: WeixinUserId): Promise<void> {
-    this.store.forget(user);
     const handle = this.handles.get(user);
-    this.handles.delete(user);
     if (handle) await handle.dispose();
+    this.store.forget(user);
+    this.handles.delete(user);
   }
   async close(): Promise<void> {
     this.closing = true;

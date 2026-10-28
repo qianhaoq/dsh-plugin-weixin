@@ -18,3 +18,10 @@ test('Cordis schema defaults preserve the trusted-host allowlist before runtime 
   assert.deepEqual(resolved.allowedApiHosts, ['ilinkai.weixin.qq.com', 'ilinkai.wxqcloud.qq.com']);
   assert.equal(resolved.requestTimeoutMs, 15000);
 });
+
+test('Cordis forwards scheduling and activity options including explicit zero values', () => {
+  const input = { maxConcurrentUsers: 2, maxPendingMessages: 8, reconnectMaxDelayMs: 9000, sessionRecoveryAttempts: 0, typingIntervalMs: 0, outboundIntervalMs: 0, shutdownTimeoutMs: 500 };
+  const config = resolveConfig(Config(input));
+  for (const [key, value] of Object.entries(input)) assert.equal(config[key], value);
+  assert.throws(() => resolveConfig({ reconnectDelayMs: 1000, reconnectMaxDelayMs: 10 }));
+});

@@ -37,7 +37,7 @@ test('inbound text reaches DSH once and returns through the matching context tok
   assert.equal(h.sent[0].contextToken, 'context-1');
   assert.equal(h.store.cursor(), 'next-cursor');
   h.controller.abort(); await h.task.catch(() => {});
-  assert.equal(h.closed(), true);
+  assert.equal(h.closed(), false, 'the account runtime owns driver disposal');
 });
 
 test('unknown reply delivery is logged, persisted, and never retried', async t => {
@@ -90,5 +90,5 @@ test('/stop is admitted by polling while DSH is still processing a previous mess
   onCleanup(async () => { cancelled.resolve(); controller.abort(); await task.catch(() => {}); });
   await eventually(() => replies.length === 2);
   assert.equal(cancelledWhileRunning, true);
-  assert.match(replies[1], /请求停止/u);
+  assert.ok(replies.some(reply => /请求停止/u.test(reply)));
 });

@@ -1,116 +1,219 @@
+/** One account supervisor: peer-ordered tasks, independent commands and durable delivery. */
 import { setTimeout as delay } from 'node:timers/promises';
 import { WeixinError, describeError } from './errors.js';
 import type { Credentials, ILinkClient, WeixinUserId } from './protocol.js';
 import type { Store, InboxRow } from './store.js';
+import { Wakeup } from './wakeup.js';
+import { withTyping } from './activity.js';
+import { channelHelp } from './commands.js';
 
 /** Per-sender DSH conversations owned exclusively by this channel. */
 export interface AgentDriver {
   respond(userId: WeixinUserId, text: string, signal: AbortSignal): Promise<string>;
   reset(userId: WeixinUserId): Promise<void>;
   cancel(userId: WeixinUserId): void;
-  close(): Promise<void>;
 }
 export interface EngineOptions {
   allowedUsers: readonly string[];
   reconnectDelayMs: number;
+  reconnectMaxDelayMs: number;
+  sessionRecoveryAttempts: number;
   queueIntervalMs: number;
   maxPromptChars: number;
   maxReplyChars: number;
   maxPendingMessages: number;
+  maxConcurrentUsers: number;
+  typingIntervalMs: number;
+  shutdownTimeoutMs: number;
+  outboundIntervalMs: number;
   historyRetentionDays: number;
 }
+interface RunningTask { readonly controller: AbortController; readonly task: Promise<void> }
+class ControlCancellation extends WeixinError {
+  constructor(readonly command: 'stop' | 'new') { super('AGENT', 'DSH task', 'Stopped by a WeChat control command.'); }
+}
 
-/** Separate long polling from serial work so /stop can cancel a running turn. */
+/** Owns all channel work; its returned promise is the sole drain operation. */
 export class Engine {
+  private readonly wakeup = new Wakeup();
+  private readonly running = new Map<WeixinUserId, RunningTask>();
+  private readonly barriers = new Map<WeixinUserId, Promise<void>>();
+  private readonly children = new Set<Promise<void>>();
   constructor(
-    private readonly api: Pick<ILinkClient, 'updates' | 'send'>,
+    private readonly api: Pick<ILinkClient, 'updates' | 'send' | 'notify' | 'typingTicket' | 'typing'>,
     private readonly auth: Credentials, private readonly store: Store,
     private readonly driver: AgentDriver, private readonly options: EngineOptions,
     private readonly report: (message: string) => void,
   ) {}
 
-  /** Own and drain both loops. Shutdown aborts networking before disposing DSH Agents. */
+  /** Stop admission and abort all I/O before draining peer work and releasing the driver. */
   async run(signal: AbortSignal): Promise<void> {
-    this.store.recover();
-    if (this.store.counts().unknown > 0) this.report('Some earlier replies have unknown delivery status; they will not be resent. Inspect messages.sqlite before asking the user to repeat a task.');
     const controller = new AbortController();
     const combined = AbortSignal.any([signal, controller.signal]);
-    const loops = [this.poll(combined), this.work(combined)];
-    try { await Promise.all(loops); }
+    const loops: Promise<void>[] = [];
+    try {
+      this.store.recover();
+      if (this.store.counts().unknown > 0) this.report('Earlier replies have unknown delivery status. Check the chat before using /retry; tasks will not be replayed.');
+      loops.push(this.poll(combined), this.schedule(combined, controller), this.deliver(combined));
+      await Promise.all(loops);
+    }
     finally {
       controller.abort();
+      this.wakeup.notify();
       await Promise.allSettled(loops);
-      await this.driver.close();
+      await Promise.allSettled([...this.children]);
     }
   }
 
   private async poll(signal: AbortSignal): Promise<void> {
     const allowed = new Set(this.options.allowedUsers.length ? this.options.allowedUsers : [this.auth.userId]);
-    let degraded = false;
+    let failures = 0;
+    let recoveries = 0;
     while (!signal.aborted) {
-      if (this.store.counts().pending >= this.options.maxPendingMessages) { await delay(this.options.queueIntervalMs, undefined, { signal }); continue; }
       try {
         const result = await this.api.updates(this.auth, this.store.cursor(), signal);
         signal.throwIfAborted();
-        const messages = this.store.accept(result.msgs, result.get_updates_buf, allowed, this.options.maxPromptChars);
-        for (const message of messages) {
-          if (message.item_list.length === 1 && message.item_list[0]?.text_item?.text.trim() === '/stop') this.driver.cancel(message.from_user_id);
-        }
-        if (degraded) { this.report('WeChat connection recovered.'); degraded = false; }
+        this.store.accept(result.msgs, result.get_updates_buf, allowed, this.options.maxPromptChars, this.options.maxPendingMessages);
+        this.wakeup.notify();
+        if (failures > 0) this.report('WeChat connection recovered.');
+        failures = 0;
+        recoveries = 0;
         if (result.msgs.length === 0) await delay(this.options.queueIntervalMs, undefined, { signal });
       } catch (error) {
         if (signal.aborted) throw error;
+        if (error instanceof WeixinError && error.code === 'AUTH_EXPIRED' && recoveries < this.options.sessionRecoveryAttempts) {
+          recoveries++;
+          this.report('WeChat session unavailable; attempting a bounded backend reconnect without changing credentials or replaying tasks.');
+          await this.api.notify(this.auth, 'start', signal);
+          await delay(this.options.reconnectDelayMs, undefined, { signal });
+          continue;
+        }
         if (!(error instanceof WeixinError) || !error.retryable) throw error;
-        if (!degraded) this.report(`${describeError(error)} Retrying message polling; queued tasks remain durable.`);
-        degraded = true;
-        await delay(this.options.reconnectDelayMs, undefined, { signal });
+        failures++;
+        if (failures === 1) this.report(`${describeError(error)} Retrying polling; queued tasks remain durable.`);
+        await delay(Math.min(this.options.reconnectMaxDelayMs, this.options.reconnectDelayMs * 2 ** Math.min(failures - 1, 30)), undefined, { signal });
       }
     }
   }
 
-  private async work(signal: AbortSignal): Promise<void> {
-    while (!signal.aborted) {
-      const row = this.store.next();
-      if (!row) { await delay(this.options.queueIntervalMs, undefined, { signal }); continue; }
-      if (row.status === 'received') {
-        this.store.status(row.id, 'running');
-        try {
-          const text = await this.reply(row, signal);
-          signal.throwIfAborted();
-          this.store.ready(row.id, this.boundReply(text));
-        } catch (error) {
-          if (signal.aborted) throw error;
-          this.report(describeError(error));
-          await this.driver.reset(row.user_id);
-          this.store.ready(row.id, '本次 DSH 任务未成功完成，工作区可能已有部分改动。请在电脑上查看 DSH 日志；后续消息会使用新会话。');
-        }
-        continue;
+  private track(task: Promise<void>, controller: AbortController): void {
+    const observed = task.catch((error: unknown) => { controller.abort(error); }).finally(() => {
+      this.children.delete(observed);
+      this.wakeup.notify();
+    });
+    this.children.add(observed);
+  }
+
+  private interrupt(user: WeixinUserId, command: 'stop' | 'new'): RunningTask | undefined {
+    const running = this.running.get(user);
+    if (running) {
+      running.controller.abort(new ControlCancellation(command));
+      this.driver.cancel(user);
+    }
+    return running;
+  }
+
+  private control(row: InboxRow, signal: AbortSignal, controller: AbortController): void {
+    this.store.status(row.id, 'running');
+    let text: string;
+    switch (row.prompt.trim()) {
+      case '/help': text = channelHelp(); break;
+      case '/status': {
+        const count = this.store.counts(row.user_id);
+        text = `微信已连接到本机 DSH。运行中：${this.running.has(row.user_id) ? 1 : 0}；排队：${count.queued}；待处理消息：${count.pending - 1}；投递结果未知：${count.unknown}。`;
+        break;
       }
-      this.store.status(row.id, 'sending');
+      case '/stop':
+        this.interrupt(row.user_id, 'stop');
+        text = '已请求停止当前任务，并取消该命令之前的排队任务。已完成的操作不会撤销。';
+        break;
+      case '/retry':
+        if (this.store.retryLatest(row.user_id, row.context_token, this.options.maxReplyChars)) {
+          this.store.ready(row.id, '已请求重发投递结果不明的回复；可能重复，不会重新运行任务。');
+          this.store.status(row.id, 'done');
+          return;
+        }
+        text = '没有投递结果不明的回复。';
+        break;
+      case '/new': {
+        const active = this.interrupt(row.user_id, 'new');
+        const previous = this.barriers.get(row.user_id);
+        const barrier = Promise.resolve().then(async () => {
+          await previous;
+          await active?.task;
+          signal.throwIfAborted();
+          await this.driver.reset(row.user_id);
+          signal.throwIfAborted();
+          this.store.ready(row.id, '已开始新会话，历史会话仍保存在 DSH。');
+        }).finally(() => {
+          if (this.barriers.get(row.user_id) === barrier) this.barriers.delete(row.user_id);
+          this.wakeup.notify();
+        });
+        this.barriers.set(row.user_id, barrier);
+        this.track(barrier, controller);
+        return;
+      }
+      default: throw new WeixinError('STATE', 'command', 'Unsupported persisted control command.');
+    }
+    this.store.ready(row.id, text);
+  }
+
+  private async schedule(signal: AbortSignal, supervisor: AbortController): Promise<void> {
+    while (!signal.aborted) {
+      for (const row of this.store.controls()) this.control(row, signal, supervisor);
+      while (this.running.size < this.options.maxConcurrentUsers) {
+        const row = this.store.nextTask([...this.running.keys(), ...this.barriers.keys()]);
+        if (!row) break;
+        this.store.status(row.id, 'running');
+        const controller = new AbortController();
+        const taskSignal = AbortSignal.any([signal, controller.signal]);
+        const task = Promise.resolve().then(() => this.execute(row, taskSignal, signal)).finally(() => {
+          this.running.delete(row.user_id);
+          this.wakeup.notify();
+        });
+        this.running.set(row.user_id, { controller, task });
+        this.track(task, supervisor);
+      }
+      this.wakeup.notify();
+      await this.wakeup.wait(this.wakeup.version(), signal);
+    }
+    signal.throwIfAborted();
+  }
+
+  private async execute(row: InboxRow, taskSignal: AbortSignal, channelSignal: AbortSignal): Promise<void> {
+    try {
+      taskSignal.throwIfAborted();
+      const text = await withTyping(this.api, this.auth, row.user_id, row.context_token, this.options, taskSignal, this.report,
+        () => this.driver.respond(row.user_id, row.prompt, taskSignal));
+      taskSignal.throwIfAborted();
+      this.store.ready(row.id, text || 'DSH 已完成任务，但没有返回文字。');
+    } catch (error) {
+      if (channelSignal.aborted) throw error;
+      this.report(describeError(error));
+      if (!(taskSignal.reason instanceof ControlCancellation && taskSignal.reason.command === 'new')) await this.driver.reset(row.user_id);
+      channelSignal.throwIfAborted();
+      this.store.ready(row.id, taskSignal.aborted ? '任务已停止，已完成的操作不会撤销。后续消息会使用新会话。' :
+        '本次 DSH 任务未成功完成，工作区可能已有部分改动。请在电脑上查看 DSH 日志；后续消息会使用新会话。');
+    }
+  }
+
+  private async deliver(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      const version = this.wakeup.version();
+      const part = this.store.nextDelivery(this.options.maxReplyChars);
+      if (!part) { await this.wakeup.wait(version, signal); continue; }
+      this.store.startDelivery(part);
       try {
-        await this.api.send(this.auth, { userId: row.user_id, contextToken: row.context_token, clientId: row.client_id, text: row.reply ?? '' }, signal);
-        this.store.status(row.id, 'done');
+        await this.api.send(this.auth, { userId: part.user_id, contextToken: part.context_token, clientId: part.client_id, text: part.text }, signal);
+        this.store.acknowledge(part);
       } catch (error) {
-        this.store.status(row.id, 'unknown');
+        this.store.unknown(part);
         if (signal.aborted) throw error;
-        this.report(`${describeError(error)} Reply delivery is unknown; no automatic resend or task replay will occur.`);
+        this.report(`${describeError(error)} Reply delivery is unknown. Check the chat before using /retry; no automatic resend or task replay will occur.`);
         if (error instanceof WeixinError && error.code === 'AUTH_EXPIRED') throw error;
       }
       this.store.prune(this.options.historyRetentionDays);
+      if (this.options.outboundIntervalMs > 0) await delay(this.options.outboundIntervalMs, undefined, { signal });
     }
-  }
-
-  private async reply(row: InboxRow, signal: AbortSignal): Promise<string> {
-    switch (row.prompt.trim()) {
-      case '/help': return '直接发送文字即可交给 DSH。\n/new：新建会话\n/stop：停止当前任务\n/status：查看连接状态\n当前只支持文字消息。';
-      case '/new': await this.driver.reset(row.user_id); return '已开始新会话，历史会话仍保存在 DSH。';
-      case '/stop': this.driver.cancel(row.user_id); return '已请求停止当前任务。已完成的文件或命令操作不会撤销。';
-      case '/status': return `微信已连接到本机 DSH。待处理消息：${this.store.counts().pending - 1}；投递结果未知：${this.store.counts().unknown}。`;
-      default: return this.driver.respond(row.user_id, row.prompt, signal);
-    }
-  }
-  private boundReply(text: string): string {
-    const points = Array.from(text || 'DSH 已完成任务，但没有返回文字。');
-    return points.length <= this.options.maxReplyChars ? points.join('') : points.slice(0, this.options.maxReplyChars).join('') + '\n[回复已截断，完整结果请在电脑上查看 DSH 会话。]';
   }
 }

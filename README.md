@@ -4,7 +4,7 @@
 
 通过微信 ClawBot 的 iLink Bot API，直接向本机 DeepSeek Harness 发送文字任务，并接收 DSH 的最终文字回复。插件运行在 DSH 的 Cordis profile 中，不依赖 OpenClaw，也不提供独立应用启动器。
 
-当前版本为 `0.1.0`，针对 DSH `0.2.1-rc.3` 和 Node.js 24.9+ 开发。iLink 接口可能变化；自动化测试使用协议 fixture，真实微信收发需要扫码后的人工验收。此项目由社区维护，并非腾讯或 DeepSeek 官方插件。
+当前版本为 `0.2.0`，针对 DSH `0.2.1-rc.3` 和 Node.js 24.9+ 开发。iLink 接口可能变化；自动化测试使用协议 fixture，真实微信收发需要扫码后的人工验收。此项目由社区维护，并非腾讯或 DeepSeek 官方插件。设计与取舍见[架构说明](docs/architecture.md)、[社区对比](docs/comparison.md)；已有用户先读[升级说明](docs/upgrade-0.2.md)。
 
 ## 安装
 
@@ -34,7 +34,7 @@ dsh --profile weixin-login --patch "$PWD/examples/login.patch.yml"
 dsh web --patch /absolute/path/to/your/run.patch.yml
 ```
 
-已有的 `dsh web` 需要重启并带上这份 patch，才能启用微信连接；仅安装包不会开始接收消息。模型与登录凭据沿用该 Web profile 的 DSH 配置；也可以在 patch 中同时明确指定 `provider` 和 `model`。每条微信任务使用自己的 DSH Session，该 Session 会附加到配置的工作区，能够在 Web 界面中查看。它不会接管你原来打开的聊天会话。
+已有的 `dsh web` 需要重启并带上这份 patch，才能启用微信连接；仅安装包不会开始接收消息。模型与登录凭据沿用该 Web profile 的 DSH 配置；也可以在 patch 中同时明确指定 `provider` 和 `model`。每个微信用户使用独立的持久 DSH Session，连续消息续接同一会话；该 Session 会附加到配置的工作区，能够在 Web 界面中查看。它不会接管你原来打开的聊天会话。
 
 默认只接受扫码微信用户的私聊。要开放给其他用户，明确配置 `allowedUsers` 为 iLink user ID 列表；该列表一旦非空就完全替代默认扫码账号。群聊和 bot 消息会被忽略，不会执行模型任务。
 
@@ -43,17 +43,20 @@ dsh web --patch /absolute/path/to/your/run.patch.yml
 | 命令 | 行为 |
 | --- | --- |
 | `/help` | 显示命令和文字消息限制。 |
-| `/new` | 释放当前微信用户的 Agent，下一条任务创建新会话；历史日志保留。 |
-| `/stop` | 立即请求取消当前正在运行的任务；已完成的操作不会撤销。 |
-| `/status` | 显示待处理数量与回复投递结果未知的数量。 |
+| `/new` | 取消当前任务和此前排队工作，等待清理后切换新会话；历史日志保留。 |
+| `/stop` | 请求停止当前任务，并取消命令之前的排队任务；之后的消息保留，已完成操作不撤销。 |
+| `/status` | 显示你自己的运行、排队和未知投递数量，长任务期间也可响应。 |
+| `/retry` | 核对聊天后，续发自己最近一条投递结果不明的回复；可能重复，不重跑模型或已确认段。 |
 
-第一版不下载或执行图片、语音、视频、文件以及引用内容；包含这些条目的消息会收到文字提示。所有用户的任务按接收顺序串行执行，轮询与任务执行独立，因此运行任务时仍可接收 `/stop`。同一批响应可能使队列短暂超过 `maxPendingMessages`；达到阈值后暂停后续轮询，已经接收的整批消息仍被保存。
+当前不下载或执行图片、语音、视频、文件以及引用内容；包含这些条目的消息会收到文字提示。同一用户按顺序执行任务，不同用户有界并行；控制命令不占模型执行槽。任务运行期间显示原生“正在输入”，输入状态接口失败不会影响任务。
+
+达到 `maxPendingMessages` 时，新文字任务收到明确的队满通知，不会暗中丢弃或假装已排队；轮询继续接收控制命令。每个 Agent 的渠道说明使用同一命令表，并通过 DSH 原生系统提示词和 Session 日志记录，模型能据此解释微信里的操作方式。
 
 ## 权限与运行要求
 
 默认 `permissionPreset: read-only`，并且 Agent 的审批策略固定为 `never`：需要额外批准的操作自动拒绝，不会通过微信放行，也不会自动提升权限。若明确选择 `workspace-write`，DSH 会使用该预设允许的工作区写入权限。不要仅为了消除错误而选择更高权限。
 
-电脑需要联网并持续运行 DSH。断网期间轮询会重试，已接收任务仍保存在本机；微信凭据失效（`-14`）时连接停止，需要重新扫码。后台故障同时写入 stderr 和 Cordis 日志，即使 profile 没有日志 exporter 也能看到。日志不会输出 bot token、context token、原始接口响应或模型回复；终端二维码链接本身属于登录信息，不要公开分享。
+电脑需要联网并持续运行 DSH。断网期间轮询采用有上限的指数退避，已接收任务仍保存在本机。会话返回 `-14` 时，先在 `sessionRecoveryAttempts` 范围内尝试恢复后端会话；持续失败才停止并提示重新登录。后台故障同时写入 stderr 和 Cordis 日志，即使 profile 没有日志 exporter 也能看到。日志不会输出 bot token、context token、原始接口响应或模型回复；终端二维码链接本身属于登录信息，不要公开分享。
 
 ## 持久化与失败语义
 
@@ -61,9 +64,11 @@ dsh web --patch /absolute/path/to/your/run.patch.yml
 
 一把进程锁保证同一插件目录只有一个运行实例。入站消息与下一次轮询游标在同一 SQLite 事务中保存；同一 bot 下的精确消息 ID 用于去重，包括超过 JavaScript 安全整数范围的 ID。已完成消息保留 `historyRetentionDays` 天，之后清理；去重保证覆盖保留期间。
 
-任务在写入 `running` 状态后才交给 DSH；正常完成后先 flush Session，再保存回复并发送。重启后，`running` 任务不会自动重跑，系统会发送中断提示，并让该用户的后续任务使用新会话。已经保存但尚未发送的回复可以继续投递。
+任务在写入 `running` 状态后才交给 DSH；正常完成后先 flush Session，再保存完整回复并按段发送。段号计入长度限制，每段有稳定 ID 和独立确认状态；正文不会被截断。重启后，`running` 任务不会自动重跑，系统会发送中断提示，并让该用户的后续任务使用新会话。已经保存但尚未发送的回复可以继续投递，已确认的段不会再次发送。
 
-发送前写入 `sending`；发送失败或进程在投递期间退出后，状态记为 `unknown`，不自动重发，也不重跑任务。稳定 `client_id` 不被当成服务端去重承诺。请先核对微信聊天和 DSH Session，再决定是否重发任务；`/status` 和默认日志都会报告未知投递。插件不承诺 exactly-once 网络投递。
+每段发送前写入 `sending`；发送失败或进程在投递期间退出后，该段记为 `unknown`，后续段暂停，不自动重发。请先核对微信聊天和 DSH Session，再用 `/retry` 续发；它只发送保存的正文，不重跑任务。稳定 `client_id` 不被当成服务端去重承诺，API 确认也不等同于手机已读；插件不承诺 exactly-once 网络投递。`/status` 和默认日志都会报告未知投递。
+
+数据库版本 1 首次升级到版本 2 前，会自动生成一份私密 SQLite 备份，再以事务迁移；凭据和 Session 文件位置保持不变。关闭时由一个 Runtime 依次完成操作 drain、Driver 释放、数据库关闭和账号锁释放，清理失败也不会跳过后续释放。
 
 ## 配置
 
@@ -82,9 +87,14 @@ dsh web --patch /absolute/path/to/your/run.patch.yml
 | `requestTimeoutMs` / `pollTimeoutMs` | `15000` / `40000`。 |
 | `loginTimeoutMs` / `loginPollIntervalMs` | `300000` / `1000`。 |
 | `reconnectDelayMs` / `queueIntervalMs` | `3000` / `250`。 |
+| `reconnectMaxDelayMs` / `sessionRecoveryAttempts` | `30000` / `1`；轮询退避上限与连续会话拒绝的恢复次数。 |
+| `maxConcurrentUsers` | `4`；不同用户的模型执行槽，同一用户始终串行。 |
+| `typingIntervalMs` | `10000`；原生输入状态刷新间隔，`0` 关闭。 |
+| `shutdownTimeoutMs` | `2000`；停止通知与辅助输入状态请求的时间预算。 |
+| `outboundIntervalMs` | `300`；已处理的消息段之间的发送间隔。 |
 | `taskTimeoutMs` | `180000`；超时请求取消，不撤销已完成的操作。 |
-| `maxPromptChars` / `maxReplyChars` | `16000` UTF-16 代码单元 / `1800` Unicode 码点；超长输入拒绝进入模型，超长回复截断并提示查看 DSH。 |
-| `maxPendingMessages` | `100`，达到后暂停轮询。 |
+| `maxPromptChars` / `maxReplyChars` | `16000` UTF-16 代码单元 / 每段 `1800` Unicode 码点（含段号）；超长输入拒绝进入模型，回复完整分段。 |
+| `maxPendingMessages` | `100`，模型任务接纳上限；队满仍接收控制命令。 |
 | `historyRetentionDays` | `30`，只清理已完成记录。 |
 
 在没有启动 Web 的独立 profile 中查看本机状态：
@@ -103,9 +113,9 @@ pnpm check
 pnpm pack
 ```
 
-测试覆盖协议鉴权、64 位 ID、可信主机、扫码与验证码、凭据权限、游标事务、去重、发送者隔离、中断恢复、未知投递、任务失败及并行轮询取消。测试使用独立临时目录、可注入 transport 和事件屏障，不登录真实微信、不发送真实消息、不调用付费模型 API。CI 在 Linux 和 Windows 的 Node.js 24/26 上执行检查。
+测试覆盖协议鉴权、64 位 ID、可信主机、扫码与验证码、凭据权限、游标事务、去重、发送者隔离、用户内顺序与用户间并行、队满控制、分段确认、手动续发、升级备份和有序清理。测试使用独立临时目录、可注入 transport 和事件屏障，不登录真实微信、不发送真实消息、不调用付费模型 API。CI 在 Linux 和 Windows 的 Node.js 24/26 上执行检查。
 
-另有针对已构建 DSH 源码 checkout 的集成测试：真实 CLI 加载插件，真实 Agent 通过本地 Messages mock 运行两轮，并在释放 Agent 后恢复原来的持久会话。测试创建独立 Harness home 和工作区，并关闭会话日志上传：
+另有针对已构建 DSH 源码 checkout 的集成测试：真实 CLI 加载插件，真实 Agent 通过本地 Messages mock 运行两轮，验证渠道说明已经记录到 Session。完整的模拟微信入站、调度、分段确认和账号运行实例重启还会验证游标与会话续接。测试创建独立 Harness home 和工作区，并关闭会话日志上传：
 
 ```sh
 DSH_SOURCE_DIR=/absolute/path/to/deepseek-harness \

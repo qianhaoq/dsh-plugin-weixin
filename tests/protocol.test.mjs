@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ILinkClient, apiOrigin, parseWireJson } from '../dist/protocol.js';
+import { ILinkClient, apiOrigin, parseWireJson, PLUGIN_VERSION } from '../dist/protocol.js';
+import { readFile } from 'node:fs/promises';
 import { describeError } from '../dist/errors.js';
 import { apiOptions, auth } from './helpers.mjs';
 
@@ -65,4 +66,31 @@ test('backend lifecycle notifications use authenticated account endpoints', asyn
   await api.notify(auth, 'start', new AbortController().signal);
   await api.notify(auth, 'stop', new AbortController().signal);
   assert.deepEqual(paths, ['/ilink/bot/msg/notifystart', '/ilink/bot/msg/notifystop']);
+});
+
+test('wire metadata matches the package version', async () => {
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(PLUGIN_VERSION, pkg.version);
+  const api = new ILinkClient(apiOptions, async (url, init) => {
+    const [major, minor, patch] = pkg.version.split('.').map(Number);
+    assert.equal(init.headers['iLink-App-ClientVersion'], String((major << 16) | (minor << 8) | patch));
+    assert.equal(JSON.parse(init.body).base_info.channel_version, pkg.version);
+    return Response.json({ ret: 0 });
+  });
+  await api.notify(auth, 'start', new AbortController().signal);
+});
+
+test('typing uses separate configuration and status endpoints with the original user context', async () => {
+  const calls = [];
+  const api = new ILinkClient(apiOptions, async (url, init) => {
+    calls.push({ path: url.pathname, body: JSON.parse(init.body) });
+    return Response.json({ ret: 0, ...(url.pathname.endsWith('getconfig') ? { typing_ticket: 'ticket' } : {}) });
+  });
+  const signal = new AbortController().signal;
+  const ticket = await api.typingTicket(auth, 'owner', 'original-context', signal);
+  await api.typing(auth, 'owner', ticket, true, signal);
+  await api.typing(auth, 'owner', ticket, false, signal);
+  assert.equal(calls[0].body.context_token, 'original-context');
+  assert.equal(calls[1].body.status, 1);
+  assert.equal(calls[2].body.status, 2);
 });

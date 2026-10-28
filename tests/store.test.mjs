@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, message } from './helpers.mjs';
-import { Store } from '../dist/store.js';
+import { Store, SCHEMA_VERSION } from '../dist/store.js';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 
@@ -69,8 +69,8 @@ test('future database versions are rejected without rewriting their metadata', a
   const { directory } = await fixture(t);
   const db = new DatabaseSync(join(directory, 'messages.sqlite'));
   try {
-    db.prepare('UPDATE metadata SET value=? WHERE key=?').run('2', 'schema_version');
+    db.prepare('UPDATE metadata SET value=? WHERE key=?').run(String(SCHEMA_VERSION + 1), 'schema_version');
     assert.throws(() => new Store(directory, 'fixture-bot'), { code: 'STATE' });
-    assert.equal(db.prepare('SELECT value FROM metadata WHERE key=?').get('schema_version').value, '2');
+    assert.equal(db.prepare('SELECT value FROM metadata WHERE key=?').get('schema_version').value, String(SCHEMA_VERSION + 1));
   } finally { db.close(); }
 });

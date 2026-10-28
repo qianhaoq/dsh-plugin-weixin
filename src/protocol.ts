@@ -2,6 +2,9 @@ import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { WeixinError } from './errors.js';
 
+/** Version advertised to iLink; package validation checks it against package.json. */
+export const PLUGIN_VERSION = '0.2.0';
+
 export const userIdSchema = z.string().min(1).brand<'WeixinUserId'>();
 export type WeixinUserId = z.infer<typeof userIdSchema>;
 export const credentialsSchema = z.object({
@@ -73,7 +76,7 @@ export class ILinkClient {
 
   private async request(base: string, endpoint: string, body: object | undefined, signal: AbortSignal, token?: string, poll = false): Promise<unknown> {
     const origin = apiOrigin(base, this.options.allowedApiHosts);
-    const headers: Record<string, string> = { 'iLink-App-Id': 'bot', 'iLink-App-ClientVersion': '256' };
+    const headers: Record<string, string> = { 'iLink-App-Id': 'bot', 'iLink-App-ClientVersion': '512' };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
       headers['AuthorizationType'] = 'ilink_bot_token';
@@ -92,7 +95,7 @@ export class ILinkClient {
       const result = z.object({ ret: z.number().optional(), errcode: z.number().optional() }).parse(data);
       const code = result.errcode && result.errcode !== 0 ? result.errcode : result.ret;
       if (code !== undefined && code !== 0) {
-        throw new WeixinError(code === -14 ? 'AUTH_EXPIRED' : 'API', endpoint.split('?')[0]!, `Server returned code ${code}; ${code === -14 ? 'scan a new QR code.' : 'check the channel status.'}`);
+        throw new WeixinError(code === -14 ? 'AUTH_EXPIRED' : 'API', endpoint.split('?')[0]!, `Server returned code ${code}; ${code === -14 ? 'reconnect the session or scan a new QR code.' : 'check the channel status.'}`);
       }
       return data;
     } catch (error) {
@@ -127,6 +130,21 @@ export class ILinkClient {
     await this.request(auth.baseUrl, `ilink/bot/msg/notify${phase}`, { base_info: this.baseInfo() }, signal, auth.token);
   }
 
+  /** Obtain an account-supported typing ticket without consuming a text-message reply. */
+  async typingTicket(auth: Credentials, user: WeixinUserId, context: string, signal: AbortSignal): Promise<string | undefined> {
+    const response = await this.request(auth.baseUrl, 'ilink/bot/getconfig', {
+      ilink_user_id: user, context_token: context, base_info: this.baseInfo(),
+    }, signal, auth.token);
+    return z.object({ typing_ticket: z.string().optional() }).parse(response).typing_ticket;
+  }
+
+  /** Publish or clear a task-owned native typing indicator. */
+  async typing(auth: Credentials, user: WeixinUserId, ticket: string, active: boolean, signal: AbortSignal): Promise<void> {
+    await this.request(auth.baseUrl, 'ilink/bot/sendtyping', {
+      ilink_user_id: user, typing_ticket: ticket, status: active ? 1 : 2, base_info: this.baseInfo(),
+    }, signal, auth.token);
+  }
+
   /** Send one final text message once, with its original reply context and stable client ID. */
   async send(auth: Credentials, message: { userId: string; contextToken: string; clientId: string; text: string }, signal: AbortSignal): Promise<void> {
     const response = await this.request(auth.baseUrl, 'ilink/bot/sendmessage', {
@@ -142,5 +160,5 @@ export class ILinkClient {
     }
   }
 
-  private baseInfo(): object { return { channel_version: '0.1.0', bot_agent: 'DeepSeekHarness/0.2.1 DshWeixin/0.1.0' }; }
+  private baseInfo(): object { return { channel_version: PLUGIN_VERSION, bot_agent: `DeepSeekHarness/0.2.1 DshWeixin/${PLUGIN_VERSION}` }; }
 }

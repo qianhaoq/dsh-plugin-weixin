@@ -5,7 +5,7 @@ import { setImmediate } from 'node:timers/promises';
 import { Store } from '../dist/store.js';
 export const auth = { version: 1, token: 'fixture-token', botId: 'fixture-bot', userId: 'owner', baseUrl: 'https://ilinkai.weixin.qq.com' };
 export const apiOptions = { requestTimeoutMs: 1000, pollTimeoutMs: 1000, allowedApiHosts: ['ilinkai.weixin.qq.com'], loginBaseUrl: 'https://ilinkai.weixin.qq.com' };
-export const engineOptions = { allowedUsers: [], reconnectDelayMs: 10, queueIntervalMs: 10, maxPromptChars: 1000, maxReplyChars: 100, maxPendingMessages: 100, historyRetentionDays: 30 };
+export const engineOptions = { allowedUsers: [], reconnectDelayMs: 10, reconnectMaxDelayMs: 100, sessionRecoveryAttempts: 1, queueIntervalMs: 10, maxPromptChars: 1000, maxReplyChars: 100, maxPendingMessages: 100, maxConcurrentUsers: 4, typingIntervalMs: 0, shutdownTimeoutMs: 100, outboundIntervalMs: 0, historyRetentionDays: 30 };
 export const message = (id = '1', text = 'hello', user = 'owner') => ({ message_id: id, from_user_id: user, message_type: 1, context_token: `context-${id}`, item_list: [{ type: 1, text_item: { text } }] });
 export async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-weixin-test-'));
@@ -29,4 +29,29 @@ export async function eventually(condition) {
     if (Date.now() >= deadline) throw new Error('Expected observable state did not arrive.');
     await setImmediate();
   }
+}
+
+/** An owned long-poll queue lets tests place controls between exact task states. */
+export function incomingApi() {
+  const queue = [];
+  let waiter;
+  let cursor = 0;
+  const sent = [];
+  const api = {
+    sent,
+    push(messages) { queue.push({ msgs: messages, get_updates_buf: String(++cursor) }); waiter?.(); },
+    async updates(auth, previous, signal) {
+      if (queue.length) return queue.shift();
+      signal.throwIfAborted();
+      return new Promise((resolve, reject) => {
+        const finish = () => { waiter = undefined; signal.removeEventListener('abort', abort); resolve(queue.shift()); };
+        const abort = () => { waiter = undefined; signal.removeEventListener('abort', abort); reject(signal.reason); };
+        waiter = finish;
+        signal.addEventListener('abort', abort, { once: true });
+      });
+    },
+    async send(auth, value) { sent.push(value); },
+    async notify() {},
+  };
+  return api;
 }
