@@ -1,17 +1,20 @@
 /** Account resources are acquired and released by one owner, including failed startup. */
-import { mkdir, realpath, stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import lockfile from 'proper-lockfile';
 import type { ResolvedConfig } from './config.js';
-import type { Credentials, ILinkClient } from './protocol.js';
+import type { Credentials, ILinkClient, WeixinUserId } from './protocol.js';
 import { Store } from './store.js';
 import { Engine } from './engine.js';
 import type { AgentDriver } from './engine.js';
 import { login, readCredentials, saveCredentials } from './login.js';
+import type { MediaPipeline } from './media/pipeline.js';
+import { privateDirectory } from './media/storage.js';
 import type { LoginIo } from './login.js';
 import { WeixinError, describeError } from './errors.js';
 
 export interface RuntimeDriver extends AgentDriver {
   initialize(): Promise<void>;
+  imageCapable?(user: WeixinUserId, signal: AbortSignal): Promise<boolean>;
   close(): Promise<void>;
 }
 /** Dependencies are explicit so lifecycle tests use real storage without external messaging. */
@@ -19,6 +22,7 @@ export interface RuntimeDependencies {
   readonly api: Pick<ILinkClient, 'qr' | 'loginStatus' | 'updates' | 'send' | 'notify' | 'typingTicket' | 'typing'>;
   readonly loginIo: LoginIo;
   readonly driver: (store: Store, workspaceRoot: string) => RuntimeDriver;
+  readonly media?: (store: Store, driver: RuntimeDriver) => MediaPipeline;
   readonly report: (message: string) => void;
   readonly output: (message: string) => void;
 }
@@ -31,7 +35,7 @@ export interface RuntimeDependencies {
  */
 export async function runAccount(config: ResolvedConfig, signal: AbortSignal, dependencies: RuntimeDependencies): Promise<ResolvedConfig['mode']> {
   signal.throwIfAborted();
-  await mkdir(config.stateDirectory, { recursive: true, mode: 0o700 });
+  privateDirectory(config.stateDirectory);
   const controller = new AbortController();
   const lifetime = AbortSignal.any([signal, controller.signal]);
   const release = await lockfile.lock(await realpath(config.stateDirectory), { retries: 0, onCompromised: () => {
@@ -64,11 +68,13 @@ export async function runAccount(config: ResolvedConfig, signal: AbortSignal, de
         lifetime.throwIfAborted();
         driver = dependencies.driver(store, workspace);
         await driver.initialize();
+        const media = dependencies.media?.(store, driver);
+        await media?.initialize();
         lifetime.throwIfAborted();
         notificationAttempted = true;
         await dependencies.api.notify(auth, 'start', lifetime);
         dependencies.output('channel started; only explicitly allowed senders can run DSH tasks.');
-        await new Engine(dependencies.api, auth, store, driver, config, dependencies.report).run(lifetime);
+        await new Engine(dependencies.api, auth, store, driver, config, dependencies.report, media).run(lifetime);
       }
     }
   } catch (error) { failures.push(error); }

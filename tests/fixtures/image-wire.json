@@ -1,0 +1,12 @@
+{
+  "message_id": "18446744073709551611",
+  "from_user_id": "owner",
+  "message_type": 1,
+  "context_token": "fixture-context",
+  "item_list": [
+    {"type": 1, "text_item": {"text": "请描述这张图片"}},
+    {"type": 2, "image_item": {"aeskey": "00112233445566778899aabbccddeeff", "media": {"encrypt_type": 1, "encrypt_query_param": "fixture+/=%query", "aes_key": "ABEiM0RVZneImaq7zN3u/w=="}}},
+    {"type": 1, "text_item": {"text": "还有第二张"}},
+    {"type": 2, "image_item": {"media": {"encrypt_type": 1, "full_url": "https://novac2c.cdn.weixin.qq.com/c2c/download?fixture=second", "aes_key": "MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY="}}}
+  ]
+}

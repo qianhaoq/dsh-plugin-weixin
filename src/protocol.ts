@@ -13,7 +13,13 @@ export const credentialsSchema = z.object({
 }).strict();
 export type Credentials = z.infer<typeof credentialsSchema>;
 
-const itemSchema = z.object({ type: z.number().int(), text_item: z.object({ text: z.string() }).optional(), ref_msg: z.unknown().optional() });
+// Item failures are local notices; only the reliable outer envelope can stop cursor admission.
+const itemFields = z.object({ type: z.number().int(), text_item: z.object({ text: z.string() }).optional().catch(undefined),
+  image_item: z.unknown().optional(), voice_item: z.unknown().optional(), video_item: z.unknown().optional(), ref_msg: z.unknown().optional() });
+const itemSchema = z.unknown().transform(value => {
+  const parsed = itemFields.safeParse(value);
+  return parsed.success ? parsed.data : { type: -1, ref_msg: typeof value === 'object' && value !== null && 'ref_msg' in value ? value.ref_msg : undefined };
+});
 export const messageSchema = z.object({
   message_id: z.string().min(1), from_user_id: userIdSchema,
   to_user_id: z.string().optional(), group_id: z.string().optional(),
@@ -70,7 +76,7 @@ export interface ApiOptions {
   loginBaseUrl: string;
 }
 
-/** Text-only iLink transport. Sends are never retried because their outcome can be unknown. */
+/** iLink JSON transport (CDN downloads use an independent trust boundary). Sends are never retried because their outcome can be unknown. */
 export class ILinkClient {
   constructor(private readonly options: ApiOptions, private readonly transport: typeof fetch = fetch) {}
 

@@ -4,6 +4,7 @@ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 import { WeixinError } from './errors.js';
+import { cdnUrl, DEFAULT_CDN_BASE, DEFAULT_CDN_HOST } from './media/cdn-client.js';
 import { apiOrigin } from './protocol.js';
 
 const optionsSchema = z.object({
@@ -12,6 +13,17 @@ const optionsSchema = z.object({
   workspaceRoot: z.string().optional(),
   allowedUsers: z.array(z.string().min(1)).default([]),
   allowedApiHosts: z.array(z.string().min(1)).min(1).default(['ilinkai.weixin.qq.com', 'ilinkai.wxqcloud.qq.com']),
+  allowedCdnHosts: z.array(z.string().regex(/^[a-z0-9.-]+$/u)).min(1).default([DEFAULT_CDN_HOST]),
+  cdnBaseUrl: z.string().default(DEFAULT_CDN_BASE),
+  maxMediaItems: z.number().int().min(1).max(4).default(4),
+  maxImageBytes: z.number().int().min(1).max(10 * 1024 * 1024).default(10 * 1024 * 1024),
+  maxImagePixels: z.number().int().min(1).max(32000000).default(32000000),
+  maxMessageMediaBytes: z.number().int().min(1).max(60 * 1024 * 1024).default(60 * 1024 * 1024),
+  maxMessageImageBytes: z.number().int().min(1).max(12 * 1024 * 1024).default(12 * 1024 * 1024),
+  mediaDownloadConcurrency: z.number().int().min(1).max(8).default(2),
+  mediaDownloadTimeoutMs: z.number().int().min(100).max(20000).default(20000),
+  mediaPrepareTimeoutMs: z.number().int().min(100).max(120000).default(120000),
+  inboundQuotaBytes: z.number().int().min(1).max(1024 * 1024 * 1024).default(1024 * 1024 * 1024),
   loginBaseUrl: z.string().default('https://ilinkai.weixin.qq.com'),
   agentPreset: z.string().default('standard'), permissionPreset: z.string().default('read-only'),
   provider: z.string().min(1).optional(), model: z.string().min(1).optional(),
@@ -41,6 +53,9 @@ export const Config = Schema.object({
   mode: Schema.union(['disabled', 'login', 'run', 'status']).default('disabled'),
   stateDirectory: Schema.string(), workspaceRoot: Schema.string(),
   allowedUsers: Schema.array(Schema.string()), allowedApiHosts: Schema.array(Schema.string()).default(['ilinkai.weixin.qq.com', 'ilinkai.wxqcloud.qq.com']),
+  allowedCdnHosts: Schema.array(Schema.string()).default([DEFAULT_CDN_HOST]), cdnBaseUrl: Schema.string(),
+  maxMediaItems: Schema.number(), maxImageBytes: Schema.number(), maxImagePixels: Schema.number(), maxMessageMediaBytes: Schema.number(), maxMessageImageBytes: Schema.number(),
+  mediaDownloadConcurrency: Schema.number(), mediaDownloadTimeoutMs: Schema.number(), mediaPrepareTimeoutMs: Schema.number(), inboundQuotaBytes: Schema.number(),
   loginBaseUrl: Schema.string(), agentPreset: Schema.string(), permissionPreset: Schema.string(),
   provider: Schema.string(), model: Schema.string(),
   requestTimeoutMs: Schema.number(), pollTimeoutMs: Schema.number(), loginTimeoutMs: Schema.number(),
@@ -59,5 +74,7 @@ export function resolveConfig(input: Config): z.output<typeof optionsSchema> {
   if (Boolean(config.provider) !== Boolean(config.model)) throw new WeixinError('STATE', 'configuration', 'provider and model must be specified together.');
   if (config.reconnectMaxDelayMs < config.reconnectDelayMs) throw new WeixinError('STATE', 'configuration', 'reconnectMaxDelayMs must be at least reconnectDelayMs.');
   apiOrigin(config.loginBaseUrl, config.allowedApiHosts);
+  try { cdnUrl(config.cdnBaseUrl, config.allowedCdnHosts, true); }
+  catch { throw new WeixinError('STATE', 'configuration', 'cdnBaseUrl must be an allowlisted HTTPS /c2c base without credentials, ports or fragments.'); }
   return config;
 }

@@ -8,7 +8,7 @@ export const CHANNEL_COMMANDS = Object.freeze([
 ]);
 
 export function isControlCommand(text: string): boolean { return CHANNEL_COMMANDS.some(command => command.name === text); }
-export function channelHelp(): string { return `直接发送文字即可交给 DSH。\n${CHANNEL_COMMANDS.map(command => `${command.name}：${command.help}`).join('\n')}\n当前只支持文字消息。`; }
+export function channelHelp(options: { maxMediaItems?: number; maxImageBytes?: number } = {}): string { return `直接发送文字或图片即可交给 DSH（看图需模型明确支持图片输入）。\n${CHANNEL_COMMANDS.map(command => `${command.name}：${command.help}`).join('\n')}\n入站支持文字＋图片；每条最多 ${options.maxMediaItems ?? 4} 个媒体条目，单图上限 ${(options.maxImageBytes ?? 10485760) / 1048576} MiB。语音尚未识别，视频尚未解析，请改发文字或关键截图。出站仅发送最终文字。`; }
 export const channelGuide = 'The user is messaging through WeChat ClawBot. This channel delivers final text replies and splits long answers into numbered parts. '
   + 'The following chat commands are handled locally by the channel: ' + CHANNEL_COMMANDS.map(command => `${command.name}: ${command.model}`).join('; ') + '. '
-  + 'Describe these chat commands when explaining channel operation. Do not claim that images, files, or voice messages were sent through this text-only channel.';
+  + 'Describe these chat commands when explaining channel operation. Inbound supports text and native image attachments when the current model declares image input; outbound delivers final text only. Voice is not recognized and video is not parsed in this stage. Files and quoted messages are unsupported. Only pure text messages can invoke channel commands. Never infer content of missing or failed media, or claim to have heard voice or watched video. Media notices are explicit limitations, not user content.';

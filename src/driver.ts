@@ -13,6 +13,8 @@ import type {} from '@deepseek-ai/dsh-workspace';
 import type {} from '@deepseek-ai/dsh-subagent';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import type { AgentDriver } from './engine.js';
+import type {} from '@deepseek-ai/dsh-attachment';
+import type { PreparedInbound } from './media/types.js';
 import type { Store } from './store.js';
 import type { WeixinUserId } from './protocol.js';
 import { WeixinError } from './errors.js';
@@ -35,6 +37,7 @@ export class DshDriver implements AgentDriver {
   constructor(private readonly ctx: Context, private readonly store: Store, private readonly options: DriverOptions) {}
 
   async initialize(): Promise<void> {
+    if (!this.ctx.attachments || !this.ctx.llm) throw new WeixinError('STATE', 'run dependencies', 'Run mode requires attachments and llm services.');
     this.ctx.permissionPresets.resolve(this.options.permissionPreset);
     await this.ctx.agentPresets.resolve(this.options.agentPreset);
   }
@@ -78,11 +81,22 @@ export class DshDriver implements AgentDriver {
     }
   }
 
+  /** Resolve the actual Session route; unknown image capability is unavailable. */
+  async imageCapable(user: WeixinUserId, signal: AbortSignal): Promise<boolean> {
+    const { agent } = await this.handle(user, signal);
+    const routed = agent.session.requestHeader()?.config;
+    const provider = routed?.provider ?? agent.options.provider;
+    const model = routed?.model ?? agent.options.model;
+    if (!provider || !model || !this.ctx.llm) return false;
+    try { return (await this.ctx.llm.resolveModelInfo(provider, model, signal)).inputModalities?.includes('image') === true; }
+    catch { signal.throwIfAborted(); return false; }
+  }
+
   /** Submit logged user input, await root and child quiescence, then flush before delivery. */
-  async respond(user: WeixinUserId, text: string, signal: AbortSignal): Promise<string> {
+  async respond(user: WeixinUserId, input: string | PreparedInbound, signal: AbortSignal): Promise<string> {
     const controller = new AbortController();
     this.active.set(user, controller);
-    try { return await this.run(user, text, AbortSignal.any([signal, controller.signal, AbortSignal.timeout(this.options.taskTimeoutMs)])); }
+    try { return await this.run(user, input, AbortSignal.any([signal, controller.signal, AbortSignal.timeout(this.options.taskTimeoutMs)])); }
     catch (error) {
       if (signal.aborted || error instanceof WeixinError) throw error;
       throw new WeixinError('AGENT', 'DSH task', 'Task failed or reached taskTimeoutMs; inspect the local DSH Session.', false, { cause: error });
@@ -90,7 +104,7 @@ export class DshDriver implements AgentDriver {
     finally { this.active.delete(user); }
   }
 
-  private async run(user: WeixinUserId, text: string, combined: AbortSignal): Promise<string> {
+  private async run(user: WeixinUserId, input: string | PreparedInbound, combined: AbortSignal): Promise<string> {
     const { agent } = await this.handle(user, combined);
     let reply = '';
     let reason: SessionEvent<'turn/end'>['data']['reason'] | undefined;
@@ -114,7 +128,9 @@ export class DshDriver implements AgentDriver {
     combined.addEventListener('abort', cancel, { once: true });
     try {
       combined.throwIfAborted();
-      agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }));
+      if (typeof input !== 'string' && input.content.some(part => part.type === 'image') && !await this.imageCapable(user, combined)) throw new WeixinError('AGENT', 'image route', 'Current model route no longer declares image input.');
+      combined.throwIfAborted();
+      agent.followup(createUserMessage({ content: typeof input === 'string' ? [{ type: 'text', text: input }] : input.content, source: { kind: 'user' } }));
       while (true) {
         await agent.whenIdle();
         const seq = agent.session.seq;

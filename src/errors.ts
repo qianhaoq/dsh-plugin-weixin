@@ -1,3 +1,5 @@
+import { MediaError } from './media/types.js';
+
 /** Sanitized failures safe to print without response bodies or credentials. */
 export class WeixinError extends Error {
   constructor(
@@ -18,5 +20,6 @@ export class WeixinError extends Error {
  */
 export function describeError(error: unknown): string {
   if (error instanceof AggregateError) return `Account operation or cleanup failed: ${error.errors.map((cause: unknown) => describeError(cause)).join('; ')}`;
+  if (error instanceof MediaError) return `MEDIA: ${error.code}`;
   return error instanceof WeixinError ? `${error.code}: ${error.message}` : 'Unexpected failure; inspect the local runtime and restart the channel.';
 }

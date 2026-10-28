@@ -42,11 +42,11 @@ test('a send interrupted after dispatch is not resent on restart', async t => {
   assert.equal(store.counts().unknown, 1);
 });
 
-test('attachments and oversized text return local guidance without model execution', async t => {
+test('invalid images and oversized text return local guidance without model execution', async t => {
   const { store } = await fixture(t);
   store.accept([{ ...message(), item_list: [{ type: 2 }] }, message('2', 'very long')], 'cursor', new Set(['owner']), 3);
   assert.equal(store.next().status, 'ready');
-  assert.match(store.next().reply, /只支持文字/u);
+  assert.match(store.next().reply, /图片.*失败/u);
   store.status('1', 'done');
   assert.match(store.next().reply, /过长/u);
 });

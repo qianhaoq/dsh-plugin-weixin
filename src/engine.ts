@@ -6,15 +6,19 @@ import type { Store, InboxRow } from './store.js';
 import { Wakeup } from './wakeup.js';
 import { withTyping } from './activity.js';
 import { channelHelp } from './commands.js';
+import type { PreparedInbound } from './media/types.js';
+import type { MediaPipeline } from './media/pipeline.js';
 
 /** Per-sender DSH conversations owned exclusively by this channel. */
 export interface AgentDriver {
-  respond(userId: WeixinUserId, text: string, signal: AbortSignal): Promise<string>;
+  respond(userId: WeixinUserId, input: string | PreparedInbound, signal: AbortSignal): Promise<string>;
   reset(userId: WeixinUserId): Promise<void>;
   cancel(userId: WeixinUserId): void;
 }
 export interface EngineOptions {
   allowedUsers: readonly string[];
+  maxMediaItems?: number;
+  maxImageBytes?: number;
   reconnectDelayMs: number;
   reconnectMaxDelayMs: number;
   sessionRecoveryAttempts: number;
@@ -44,6 +48,7 @@ export class Engine {
     private readonly auth: Credentials, private readonly store: Store,
     private readonly driver: AgentDriver, private readonly options: EngineOptions,
     private readonly report: (message: string) => void,
+    private readonly media?: MediaPipeline,
   ) {}
 
   /** Stop admission and abort all I/O before draining peer work and releasing the driver. */
@@ -55,6 +60,7 @@ export class Engine {
       this.store.recover();
       if (this.store.counts().unknown > 0) this.report('Earlier replies have unknown delivery status. Check the chat before using /retry; tasks will not be replayed.');
       loops.push(this.poll(combined), this.schedule(combined, controller), this.deliver(combined));
+      if (this.media) loops.push(this.maintainMedia(combined));
       await Promise.all(loops);
     }
     finally {
@@ -73,7 +79,7 @@ export class Engine {
       try {
         const result = await this.api.updates(this.auth, this.store.cursor(), signal);
         signal.throwIfAborted();
-        this.store.accept(result.msgs, result.get_updates_buf, allowed, this.options.maxPromptChars, this.options.maxPendingMessages);
+        this.store.accept(result.msgs, result.get_updates_buf, allowed, this.options.maxPromptChars, this.options.maxPendingMessages, this.options.maxMediaItems);
         this.wakeup.notify();
         if (failures > 0) this.report('WeChat connection recovered.');
         failures = 0;
@@ -117,10 +123,10 @@ export class Engine {
     this.store.status(row.id, 'running');
     let text: string;
     switch (row.prompt.trim()) {
-      case '/help': text = channelHelp(); break;
+      case '/help': text = channelHelp(this.options); break;
       case '/status': {
         const count = this.store.counts(row.user_id);
-        text = `微信已连接到本机 DSH。运行中：${this.running.has(row.user_id) ? 1 : 0}；排队：${count.queued}；待处理消息：${count.pending - 1}；投递结果未知：${count.unknown}。`;
+        text = `微信已连接到本机 DSH。运行中：${this.running.has(row.user_id) ? 1 : 0}；排队：${count.queued}；待处理消息：${count.pending - 1}；投递结果未知：${count.unknown}；准备媒体：${count.preparing}。${this.media?.summary() ?? '语音识别与视频解析尚未启用。'}`;
         break;
       }
       case '/stop':
@@ -165,6 +171,7 @@ export class Engine {
         const row = this.store.nextTask([...this.running.keys(), ...this.barriers.keys()]);
         if (!row) break;
         this.store.status(row.id, 'running');
+        this.store.preparingPhase(row.id);
         const controller = new AbortController();
         const taskSignal = AbortSignal.any([signal, controller.signal]);
         const task = Promise.resolve().then(() => this.execute(row, taskSignal, signal)).finally(() => {
@@ -181,19 +188,36 @@ export class Engine {
   }
 
   private async execute(row: InboxRow, taskSignal: AbortSignal, channelSignal: AbortSignal): Promise<void> {
+    let agentStarted = false;
     try {
       taskSignal.throwIfAborted();
-      const text = await withTyping(this.api, this.auth, row.user_id, row.context_token, this.options, taskSignal, this.report,
-        () => this.driver.respond(row.user_id, row.prompt, taskSignal));
+      const text = await withTyping(this.api, this.auth, row.user_id, row.context_token, this.options, taskSignal, this.report, async () => {
+        const prepared = this.media ? await this.media.prepare(row, taskSignal) : undefined;
+        taskSignal.throwIfAborted();
+        if (prepared && !prepared.usable) return prepared.notices.join('\n') || '没有可供处理的文字或图片，请重新发送。';
+        if (!prepared && JSON.parse(row.input_json).parts.some((part: { type: string }) => part.type !== 'text')) return '图片准备服务尚未启用，请发送文字。';
+        this.store.agentPhase(row.id);
+        agentStarted = true;
+        const reply = await this.driver.respond(row.user_id, prepared ?? row.prompt, taskSignal);
+        return (prepared?.notices.length ? `${prepared.notices.join('\n')}\n以下仅依据已提供的文字和图片回答：\n` : '') + (reply || 'DSH 已完成任务，但没有返回文字。');
+      });
       taskSignal.throwIfAborted();
-      this.store.ready(row.id, text || 'DSH 已完成任务，但没有返回文字。');
+      this.store.ready(row.id, text);
     } catch (error) {
       if (channelSignal.aborted) throw error;
       this.report(describeError(error));
-      if (!(taskSignal.reason instanceof ControlCancellation && taskSignal.reason.command === 'new')) await this.driver.reset(row.user_id);
+      if (agentStarted && !(taskSignal.reason instanceof ControlCancellation && taskSignal.reason.command === 'new')) await this.driver.reset(row.user_id);
       channelSignal.throwIfAborted();
-      this.store.ready(row.id, taskSignal.aborted ? '任务已停止，已完成的操作不会撤销。后续消息会使用新会话。' :
+      this.store.ready(row.id, !agentStarted ? (taskSignal.aborted ? '媒体准备已停止，没有交给模型。' : '媒体准备未完成，没有交给模型。请重发文字或图片。') : taskSignal.aborted ? '任务已停止，已完成的操作不会撤销。后续消息会使用新会话。' :
         '本次 DSH 任务未成功完成，工作区可能已有部分改动。请在电脑上查看 DSH 日志；后续消息会使用新会话。');
+    }
+  }
+
+  private async maintainMedia(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      await delay(60 * 60 * 1000, undefined, { signal });
+      signal.throwIfAborted();
+      await this.media!.prune();
     }
   }
 
@@ -212,7 +236,8 @@ export class Engine {
         this.report(`${describeError(error)} Reply delivery is unknown. Check the chat before using /retry; no automatic resend or task replay will occur.`);
         if (error instanceof WeixinError && error.code === 'AUTH_EXPIRED') throw error;
       }
-      this.store.prune(this.options.historyRetentionDays);
+      if (this.media) await this.media.prune();
+      else this.store.prune(this.options.historyRetentionDays);
       if (this.options.outboundIntervalMs > 0) await delay(this.options.outboundIntervalMs, undefined, { signal });
     }
   }

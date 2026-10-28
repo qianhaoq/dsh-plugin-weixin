@@ -6,6 +6,7 @@ import { terminalLoginIo } from './login.js';
 import { describeError } from './errors.js';
 import { resolveConfig } from './config.js';
 import type { Config } from './config.js';
+import { MediaPipeline } from './media/pipeline.js';
 import { runAccount } from './runtime.js';
 export { Config, resolveConfig } from './config.js';
 
@@ -32,6 +33,7 @@ export function apply(ctx: Context, input: Config): void {
       const task = runAccount(config, controller.signal, {
         api: new ILinkClient(config), loginIo: terminalLoginIo,
         driver: (store, workspaceRoot) => new DshDriver(ctx, store, { ...config, workspaceRoot }),
+        media: (store, driver) => new MediaPipeline(store, config, ctx.attachments, (user, signal) => driver.imageCapable?.(user, signal) ?? Promise.resolve(false)),
         report: message => report(ctx, message),
         output: message => console.log(`weixin: ${message}`),
       }).then(() => {
@@ -45,6 +47,18 @@ export function apply(ctx: Context, input: Config): void {
       return async () => { controller.abort(); await task; };
     }, 'weixin.account');
   };
-  if (config.mode === 'run') ctx.inject(['agents', 'agentDefaultModel', 'agentPresets', 'permissionPresets', 'sessions', 'workspaceRegistry', 'subagents', 'systemPrompt'], mount);
-  else mount(ctx);
+  if (config.mode === 'run') {
+    const required = ['agents', 'agentDefaultModel', 'agentPresets', 'permissionPresets', 'sessions', 'workspaceRegistry', 'subagents', 'systemPrompt', 'attachments', 'llm'] as const;
+    ctx.inject([...required], mount);
+    ctx.effect(() => {
+      let disposed = false;
+      void Promise.resolve().then(async () => {
+        await ctx.get('loader')?.await();
+        if (disposed) return;
+        const missing = required.filter(service => !ctx.get(service));
+        if (missing.length) report(ctx, `Run mode is waiting for missing services: ${missing.join(', ')}. Enable these services in the profile.`);
+      }).catch(() => { if (!disposed) report(ctx, 'Run dependency diagnostics failed; inspect profile services.'); });
+      return () => { disposed = true; };
+    });
+  } else mount(ctx);
 }

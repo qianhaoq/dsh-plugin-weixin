@@ -49,8 +49,9 @@ test('source-built dsh loads the bundle and resumes a real Agent through the Mes
     child.stdout.on('data', append); child.stderr.on('data', append);
   });
   const transcript = JSON.parse(await readFile(output, 'utf8'));
-  assert.deepEqual(transcript, { replies: [reply, reply], sessionReused: true, channelContextLogged: true, pipelineReplies: [reply, reply], runtimeSessionReused: true, cursorResumed: true });
-  assert.ok(model.requests.length >= 4);
+  assert.deepEqual(transcript, { replies: [reply, reply], sessionReused: true, channelContextLogged: true, pipelineReplies: [reply, reply], runtimeSessionReused: true, cursorResumed: true, sessionImageLogged: true, imagePrepared: true, nativeAttachmentReadable: true, permissionPreserved: true, unknownRetried: true });
+  assert.equal(model.requests.length, 4, 'unknown delivery retry never resubmits the image task');
+  assert.ok(model.requests.some(request => JSON.stringify(request.body).includes('\"type\":\"image\"')), 'provider request contains actual image input');
   assert.ok(JSON.stringify(model.requests[0].body).includes('WeChat ClawBot'));
   assert.ok(model.requests.some(request => JSON.stringify(request.body).includes('微信第一条测试消息')));
   assert.ok(JSON.stringify(model.requests.at(-1).body).includes('流水线第1条测试消息'));

@@ -1,21 +1,54 @@
 {
   "name": "@qianhaoq/dsh-plugin-weixin",
   "version": "0.2.0",
-  "description": "WeChat ClawBot text messaging for DeepSeek Harness over the iLink bot API",
+  "description": "WeChat ClawBot text and inbound images for DeepSeek Harness over the iLink bot API",
   "type": "module",
   "license": "MIT",
   "author": "Hao Qian",
-  "repository": { "type": "git", "url": "git+https://github.com/qianhaoq/dsh-plugin-weixin.git" },
-  "keywords": ["dsh-plugin", "deepseek-harness", "wechat", "weixin", "clawbot", "ilink"],
-  "engines": { "node": ">=24.9.0", "dsh": "0.2.1-rc.3" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qianhaoq/dsh-plugin-weixin.git"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "wechat",
+    "weixin",
+    "clawbot",
+    "ilink"
+  ],
+  "engines": {
+    "node": ">=24.9.0",
+    "dsh": "0.2.1-rc.3"
+  },
   "packageManager": "pnpm@11.28.5",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "files": ["dist", "cordis.patch.yml", "examples", "docs", "README.md", "README.en.md", "LICENSE", "NOTICE"],
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "examples",
+    "docs",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "NOTICE",
+    "src/vendor/tencent-weixin/LICENSE",
+    "src/vendor/tencent-weixin/SOURCES.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-notices.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run build && node --test tests/*.test.mjs",
     "test:integration": "pnpm run build && node --test tests/integration/*.test.mjs",
@@ -31,10 +64,11 @@
     "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
     "@deepseek-ai/dsh-permission-presets": "0.2.1-rc.3",
     "@deepseek-ai/dsh-session": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-workspace": "0.2.1-rc.3",
     "@deepseek-ai/dsh-subagent": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.3",
     "@deepseek-ai/dsh-user-approval": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.3"
+    "@deepseek-ai/dsh-workspace": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.3"
   },
   "dependencies": {
     "@deepseek-ai/dsh-brand": "0.2.1-rc.3",
@@ -49,13 +83,14 @@
     "@deepseek-ai/dsh-agent": "0.2.1-rc.3",
     "@deepseek-ai/dsh-agent-default-model": "0.2.1-rc.3",
     "@deepseek-ai/dsh-agent-preset-registry": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.3",
     "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
     "@deepseek-ai/dsh-permission-presets": "0.2.1-rc.3",
     "@deepseek-ai/dsh-session": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-workspace": "0.2.1-rc.3",
     "@deepseek-ai/dsh-subagent": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-user-approval": "0.2.1-rc.3",
     "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-user-approval": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-workspace": "0.2.1-rc.3",
     "@types/node": "^24.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "@types/qrcode-terminal": "^0.12.2",
