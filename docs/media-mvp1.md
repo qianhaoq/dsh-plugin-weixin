@@ -22,7 +22,7 @@ CDN 与 iLink API 的 host allowlist 完全分开，默认仅 `novac2c.cdn.weixi
 
 原件、暂存及在途最坏情况预留受默认 1 GiB 配额限制；预留保守计数，额度不足时先清理到期终态数据，再明确拒绝媒体，文字/控制仍可用。GC 先保存待删清单，再幂等删文件，最后删数据库引用；启动、下载前、投递后及每小时维护时清理无主文件，跳过活跃媒体。仅清理 done 且超过 `historyRetentionDays` 的记录；unknown 和未完成任务保留。宿主共享附件不由本插件清理，也不计入这 1 GiB。
 
-Agent 仍使用现有 permissionPreset（默认 read-only）和审批 never，不写 workspace，不重启或重配现有 profile。
+Agent 使用配置的 permissionPreset（默认 `danger-full-access`）和审批 `never`；媒体准备只向私有状态目录和宿主附件服务保存图片，不向 workspace 写入媒体原件，也不重启或重配现有 profile。Agent 任务本身可按所选权限预设操作文件。
 
 ## schema v3 与许可
 
@@ -34,6 +34,6 @@ v1/v2 升级前 `VACUUM INTO` 到预建 0600 备份，事务内加 `input_json`�
 
 `pnpm check` 包含文字/命令/调度/投递回归，以及 wire、CDN、AES、流量、像素、落盘权限/配额、取消、恢复、GC、迁移和有序图片附件测试。
 
-`DSH_SOURCE_DIR=/absolute/path/to/deepseek-harness pnpm test:integration` 使用隔离 `DSH_HOME`、临时 profile 和本地 Messages mock，验证真实宿主图片解码/附件保存、user message/Session 图片引用、provider 请求的图片输入、相同 Session 恢复、read-only/never、分段回复和 unknown 后 `/retry` 不重跑 Agent；不接触现有 web 进程。
+`DSH_SOURCE_DIR=/absolute/path/to/deepseek-harness pnpm test:integration` 使用隔离 `DSH_HOME`、临时 profile 和本地 Messages mock，验证真实宿主图片解码/附件保存、user message/Session 图片引用、provider 请求的图片输入、相同 Session 恢复、显式配置的 read-only/never、分段回复和 unknown 后 `/retry` 不重跑 Agent；不接触现有 web 进程。
 
 仍需真实微信人工验收：单图、配文＋图、多图和实际部署视觉模型对已知图片的描述；当前线上路由是否声明 image、实际 CDN wire/域名及手机呈现，不能由 mock 测试替代。宿主 `validateImage`/`saveImages` 没有 AbortSignal 参数：插件取消后等待正在执行的有界宿主解码/保存退出，再完成清理；期间及完成后都不会晚到提交 Agent。媒体原件到期后不承诺原路径永久存在；宿主共享附件按其自身保留策略管理。

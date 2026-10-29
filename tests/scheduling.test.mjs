@@ -55,25 +55,29 @@ test('/new waits for the old task to drain while status remains responsive', asy
   const finishCleanup = Promise.withResolvers();
   const prompts = [];
   let resets = 0;
-  const driver = { async reset() { resets++; }, cancel() {}, async respond(user, text, signal) {
+  const driver = { async reset(user) { resets++; h.store.forget(user); }, cancel() {}, async respond(user, text, signal) {
     prompts.push(text);
     if (text === 'old') {
       active.resolve();
       try { await blocked(signal); }
       finally { stopping.resolve(); await finishCleanup.promise; }
     }
+    if (text === 'new task') assert.equal(h.store.session(user), undefined);
     return text;
   } };
   const h = await start(t, driver);
+  h.store.bind('owner', 'old-session');
   h.onCleanup(async () => { finishCleanup.resolve(); });
   h.api.push([message('1', 'old')]); await active.promise;
   h.api.push([message('2', '/new'), message('3', 'new task'), message('4', '/status')]);
   await stopping.promise;
   await eventually(() => h.api.sent.some(value => value.contextToken === 'context-4'));
   assert.deepEqual(prompts, ['old']); assert.equal(resets, 0);
+  assert.equal(h.store.session('owner'), 'old-session');
   finishCleanup.resolve();
   await eventually(() => h.store.counts().pending === 0);
   assert.deepEqual(prompts, ['old', 'new task']); assert.equal(resets, 1);
+  assert.equal(h.store.session('owner'), undefined);
 });
 
 test('a full queue rejects new work visibly without blocking /stop or /status', async t => {

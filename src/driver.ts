@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { randomUUID } from 'node:crypto';
 import { brandString } from '@deepseek-ai/dsh-brand';
 import { installModelSelection } from '@deepseek-ai/dsh-agent';
-import type { AgentHandle, Agent } from '@deepseek-ai/dsh-agent';
+import type { AgentHandle } from '@deepseek-ai/dsh-agent';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval';
 import type { SessionId, SessionEvent } from '@deepseek-ai/dsh-session';
@@ -19,6 +19,11 @@ import type { Store } from './store.js';
 import type { WeixinUserId } from './protocol.js';
 import { WeixinError } from './errors.js';
 import { channelGuide } from './commands.js';
+
+/** Resume can race with another owner after the registry check. */
+function isSessionConflict(error: unknown): boolean {
+  return error instanceof Error && /active under another owner|(?:agent|session) .+ (?:already registered|already live)|Saved Session belongs to another workspace/iu.test(error.message);
+}
 
 export interface DriverOptions {
   workspaceRoot: string;
@@ -44,8 +49,13 @@ export class DshDriver implements AgentDriver {
 
   private async handle(user: WeixinUserId, signal: AbortSignal): Promise<AgentHandle> {
     if (this.closing) throw new WeixinError('AGENT', 'conversation', 'Channel is closing.');
+    signal.throwIfAborted();
     const current = this.handles.get(user);
-    if (current) return current;
+    if (current) {
+      if (this.ctx.agents.get(current.agent.session.header.id) === current.agent) return current;
+      // A disposed/unregistered channel handle cannot accept another task.
+      await this.reset(user);
+    }
     const existing = this.store.session(user);
     const workspace = await this.ctx.workspaceRegistry.create(this.options.workspaceRoot);
     const preset = (await this.ctx.agentPresets.resolve(this.options.agentPreset)).id;
@@ -60,13 +70,28 @@ export class DshDriver implements AgentDriver {
       });
     };
     const id = brandString<SessionId>(existing ?? `weixin-${randomUUID()}`);
-    if (this.ctx.agents.get(id)) throw new WeixinError('AGENT', 'conversation', 'This Session is active under another owner; send /new to create another conversation.');
-    const handle = existing ? await this.ctx.agents.resume({ resumeSessionId: id, agentOptions: options, signal, setup }) :
-      await this.ctx.agents.create({ sessionId: id, agentOptions: options, signal, meta: { cwd: workspace.path, agentPreset: preset }, setup });
+    signal.throwIfAborted();
+    if (existing && this.ctx.agents.get(id)) {
+      // Never borrow or dispose another owner's live Agent: replace only our binding.
+      this.store.forget(user);
+      return this.handle(user, signal);
+    }
+    let handle: AgentHandle;
+    try {
+      handle = existing ? await this.ctx.agents.resume({ resumeSessionId: id, agentOptions: options, signal, setup }) :
+        await this.ctx.agents.create({ sessionId: id, agentOptions: options, signal, meta: { cwd: workspace.path, agentPreset: preset }, setup });
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!existing || (!this.ctx.agents.get(id) && !isSessionConflict(error))) throw error;
+      this.store.forget(user);
+      return this.handle(user, signal);
+    }
     this.handles.set(user, handle);
+    let workspaceMismatch = false;
     try {
       signal.throwIfAborted();
-      if (handle.agent.session.header.cwd !== workspace.path) throw new WeixinError('AGENT', 'conversation', 'Saved Session belongs to another workspace; send /new.');
+      workspaceMismatch = handle.agent.session.header.cwd !== workspace.path;
+      if (workspaceMismatch) throw new WeixinError('AGENT', 'conversation', 'Saved Session belongs to another workspace.');
       this.ctx.permissionPresets.set(handle.agent.session, this.options.permissionPreset);
       setApprovalPolicy(handle.agent.session, 'never');
       if (!existing) await workspace.attachSession(id);
@@ -76,7 +101,11 @@ export class DshDriver implements AgentDriver {
     } catch (error) {
       try { await handle.dispose(); }
       catch (cleanup) { throw new AggregateError([error, cleanup], 'Agent setup and rollback failed.'); }
-      this.handles.delete(user);
+      finally { this.handles.delete(user); }
+      if (existing && workspaceMismatch && !signal.aborted) {
+        this.store.forget(user);
+        return this.handle(user, signal);
+      }
       throw error;
     }
   }

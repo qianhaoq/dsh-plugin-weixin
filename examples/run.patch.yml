@@ -3,5 +3,5 @@
   config:
     mode: run
     workspaceRoot: /absolute/path/to/your/workspace
-    permissionPreset: read-only
+    permissionPreset: danger-full-access
     agentPreset: standard

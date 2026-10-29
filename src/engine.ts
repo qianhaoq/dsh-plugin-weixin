@@ -206,10 +206,10 @@ export class Engine {
     } catch (error) {
       if (channelSignal.aborted) throw error;
       this.report(describeError(error));
-      if (agentStarted && !(taskSignal.reason instanceof ControlCancellation && taskSignal.reason.command === 'new')) await this.driver.reset(row.user_id);
       channelSignal.throwIfAborted();
-      this.store.ready(row.id, !agentStarted ? (taskSignal.aborted ? '媒体准备已停止，没有交给模型。' : '媒体准备未完成，没有交给模型。请重发文字或图片。') : taskSignal.aborted ? '任务已停止，已完成的操作不会撤销。后续消息会使用新会话。' :
-        '本次 DSH 任务未成功完成，工作区可能已有部分改动。请在电脑上查看 DSH 日志；后续消息会使用新会话。');
+      const continuation = taskSignal.reason instanceof ControlCancellation && taskSignal.reason.command === 'new' ? '' : '下一条消息仍可继续当前会话。';
+      this.store.ready(row.id, !agentStarted ? (taskSignal.aborted ? '媒体准备已停止，没有交给模型。' : '媒体准备未完成，没有交给模型。请重发文字或图片。') : taskSignal.aborted ? `任务已停止，已完成的操作不会撤销。${continuation}` :
+        '本次 DSH 任务未成功完成，工作区可能已有部分改动。请在电脑上查看 DSH 日志；下一条消息仍可继续当前会话。');
     }
   }
 

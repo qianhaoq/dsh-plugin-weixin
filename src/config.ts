@@ -25,7 +25,7 @@ const optionsSchema = z.object({
   mediaPrepareTimeoutMs: z.number().int().min(100).max(120000).default(120000),
   inboundQuotaBytes: z.number().int().min(1).max(1024 * 1024 * 1024).default(1024 * 1024 * 1024),
   loginBaseUrl: z.string().default('https://ilinkai.weixin.qq.com'),
-  agentPreset: z.string().default('standard'), permissionPreset: z.string().default('read-only'),
+  agentPreset: z.string().default('standard'), permissionPreset: z.string().default('danger-full-access'),
   provider: z.string().min(1).optional(), model: z.string().min(1).optional(),
   requestTimeoutMs: z.number().int().min(100).default(15000),
   pollTimeoutMs: z.number().int().min(100).default(40000),

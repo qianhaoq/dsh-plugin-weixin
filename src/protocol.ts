@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { WeixinError } from './errors.js';
 
 /** Version advertised to iLink; package validation checks it against package.json. */
-export const PLUGIN_VERSION = '0.2.0';
+export const PLUGIN_VERSION = '0.2.1';
+const CLIENT_VERSION = String(PLUGIN_VERSION.split('.').reduce((version, part) => (version << 8) | Number(part), 0));
 
 export const userIdSchema = z.string().min(1).brand<'WeixinUserId'>();
 export type WeixinUserId = z.infer<typeof userIdSchema>;
@@ -82,7 +83,7 @@ export class ILinkClient {
 
   private async request(base: string, endpoint: string, body: object | undefined, signal: AbortSignal, token?: string, poll = false): Promise<unknown> {
     const origin = apiOrigin(base, this.options.allowedApiHosts);
-    const headers: Record<string, string> = { 'iLink-App-Id': 'bot', 'iLink-App-ClientVersion': '512' };
+    const headers: Record<string, string> = { 'iLink-App-Id': 'bot', 'iLink-App-ClientVersion': CLIENT_VERSION };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
       headers['AuthorizationType'] = 'ilink_bot_token';

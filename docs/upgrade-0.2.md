@@ -1,4 +1,4 @@
-# 升级到 0.2.0
+# 升级到 0.2.1
 
 先停止正在使用这个插件的 DSH 进程，再安装依赖、构建并重新启动。新版本继续使用原来的 `credentials.json`、`messages.sqlite` 和微信用户到 DSH Session 的映射，不要求删除数据或重新扫码；只有凭据确实不能恢复时才需要登录。
 
@@ -12,15 +12,17 @@ dsh web --patch ~/.dsh/weixin-run.patch.yml
 
 ## 配置与交互变化
 
+- `0.2.1` 保留普通任务失败、未完成、超时和 `/stop` 后的会话绑定，下一条微信消息仍可继续；不再要求手动 `/new` 恢复。原会话被网页等其他所有者占用或工作区不符时，自动绑定新渠道会话并继续当前任务，绝不借用其他所有者的 Agent。
+- 默认 `permissionPreset` 改为 `danger-full-access`，示例 patch 同步更新；审批仍固定为 `never`。需要限制访问时，请显式选择宿主提供的 `workspace-write` 等预设。`taskTimeoutMs` 默认值保持 `180000`，显式配置的超时值不变。
 - `maxReplyChars` 现在限制每个消息段的码点数，包含段号标签；完整答案不再被截断。旧版本已经截去的正文无法从旧数据库重建。
-- `/stop` 取消当前任务及命令之前尚未开始的排队任务，之后到达的消息保留。
+- `/stop` 取消当前任务及命令之前尚未开始的排队任务，保留会话和之后到达的消息。
 - `/new` 取消旧任务和旧排队工作，等待清理后再建立新会话。
 - `maxPendingMessages` 现在是模型任务接纳上限。队满时新任务收到明确拒绝通知；轮询不停止，控制命令继续可用。
 - 不同用户默认可同时运行，`maxConcurrentUsers: 1` 可限制为一个模型执行槽；同一用户仍然严格顺序执行。
 - `queueIntervalMs` 保留为无消息轮询的间隔，空闲工作器由通知唤醒，不再定时扫描数据库。
 - 新增 `/retry`。请先确认上一条回复是否已经在微信中可见；此命令可能产生重复文字，但不会重新执行模型任务或已确认段。
 - 默认启用原生输入状态；`typingIntervalMs: 0` 可关闭。状态请求失败不影响任务。
-- 新增 `reconnectMaxDelayMs`、`sessionRecoveryAttempts`、`shutdownTimeoutMs` 和 `outboundIntervalMs`，默认值见 README 配置表。审批与授权默认值没有改变。
+- 新增 `reconnectMaxDelayMs`、`sessionRecoveryAttempts`、`shutdownTimeoutMs` 和 `outboundIntervalMs`，默认值见 README 配置表。审批策略和默认发送者白名单保持不变。
 
 ## SQLite 升级
 

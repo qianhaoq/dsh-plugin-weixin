@@ -126,7 +126,7 @@ test('accept → prepare → DSH followup injects ordered native image parts and
   } };
   const ctx = {
     attachments: host, llm: { async resolveModelInfo() { return { inputModalities: ['text', 'image'] }; } },
-    agents: { get() {}, async create() { return { agent, async dispose() {} }; } },
+    agents: { get(id) { return id === session.header.id ? agent : undefined; }, async create({ sessionId }) { session.header.id = sessionId; return { agent, async dispose() {} }; } },
     agentPresets: { async resolve() { return { id: 'standard' }; } }, agentDefaultModel: { currentSelection() { return agent.options; } },
     workspaceRegistry: { async create() { return { path: directory, async attachSession() {} }; } },
     permissionPresets: { set(session, preset) { assert.equal(preset, 'read-only'); } }, sessions: { async flush() {} },

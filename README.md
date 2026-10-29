@@ -4,7 +4,7 @@
 
 通过微信 ClawBot 的 iLink Bot API，直接向本机 DeepSeek Harness 发送文字和图片任务，并接收 DSH 的最终文字回复。插件运行在 DSH 的 Cordis profile 中，不依赖 OpenClaw，也不提供独立应用启动器。
 
-当前版本为 `0.2.0`，针对 DSH `0.2.1-rc.3` 和 Node.js 24.9+ 开发。iLink 接口可能变化；自动化测试使用协议 fixture，真实微信收发需要扫码后的人工验收。此项目由社区维护，并非腾讯或 DeepSeek 官方插件。媒体边界与配置见[图片入站说明](docs/media-mvp1.md)。设计与取舍见[架构说明](docs/architecture.md)、[社区对比](docs/comparison.md)；已有用户先读[升级说明](docs/upgrade-0.2.md)。
+当前版本为 `0.2.1`，针对 DSH `0.2.1-rc.3` 和 Node.js 24.9+ 开发。iLink 接口可能变化；自动化测试使用协议 fixture，真实微信收发需要扫码后的人工验收。此项目由社区维护，并非腾讯或 DeepSeek 官方插件。媒体边界与配置见[图片入站说明](docs/media-mvp1.md)。设计与取舍见[架构说明](docs/architecture.md)、[社区对比](docs/comparison.md)；已有用户先读[升级说明](docs/upgrade-0.2.md)。
 
 ## 安装
 
@@ -44,7 +44,7 @@ dsh web --patch /absolute/path/to/your/run.patch.yml
 | --- | --- |
 | `/help` | 显示命令和入站媒体限制。 |
 | `/new` | 取消当前任务和此前排队工作，等待清理后切换新会话；历史日志保留。 |
-| `/stop` | 请求停止当前任务，并取消命令之前的排队任务；之后的消息保留，已完成操作不撤销。 |
+| `/stop` | 请求停止当前任务，并取消命令之前的排队任务；保留当前会话和之后的消息，已完成操作不撤销。 |
 | `/status` | 显示你自己的运行、排队和未知投递数量，长任务期间也可响应。 |
 | `/retry` | 核对聊天后，续发自己最近一条投递结果不明的回复；可能重复，不重跑模型或已确认段。 |
 
@@ -54,7 +54,7 @@ MVP1 入站支持文字＋图片：配文和多张图片按原顺序进入同一
 
 ## 权限与运行要求
 
-默认 `permissionPreset: read-only`，并且 Agent 的审批策略固定为 `never`：需要额外批准的操作自动拒绝，不会通过微信放行，也不会自动提升权限。若明确选择 `workspace-write`，DSH 会使用该预设允许的工作区写入权限。不要仅为了消除错误而选择更高权限。
+默认 `permissionPreset: danger-full-access`，Agent 可按宿主完整访问权限执行任务，操作范围不局限于 `workspaceRoot`。可显式选择宿主提供的 `workspace-write` 等预设限制权限。Agent 的审批策略固定为 `never`：需要额外批准的操作自动拒绝，不通过微信交互审批。
 
 电脑需要联网并持续运行 DSH。断网期间轮询采用有上限的指数退避，已接收任务仍保存在本机。会话返回 `-14` 时，先在 `sessionRecoveryAttempts` 范围内尝试恢复后端会话；持续失败才停止并提示重新登录。后台故障同时写入 stderr 和 Cordis 日志，即使 profile 没有日志 exporter 也能看到。日志不会输出 bot token、context token、原始接口响应或模型回复；终端二维码链接本身属于登录信息，不要公开分享。
 
@@ -63,6 +63,8 @@ MVP1 入站支持文字＋图片：配文和多张图片按原顺序进入同一
 插件数据目录包含 `inbound/` 图片原件、私密凭据和 schema v3 的 `messages.sqlite`，后者保存微信文字、回复上下文、最终回复、同步游标和微信用户到 DSH Session 的映射。新建目录权限为 `0700`，凭据与数据库文件权限为 `0600`（POSIX）；Windows 使用账号目录访问控制。备份这些文件时应按聊天记录和凭据处理。
 
 一把进程锁保证同一插件目录只有一个运行实例。入站消息与下一次轮询游标在同一 SQLite 事务中保存；同一 bot 下的精确消息 ID 用于去重，包括超过 JavaScript 安全整数范围的 ID。已完成消息保留 `historyRetentionDays` 天，之后清理；去重保证覆盖保留期间。
+
+普通任务错误、未完成或超时，以及 `/stop`，都保留可用的 Agent 和会话绑定，下一条微信消息仍可继续当前会话。若恢复时原会话已被网页等其他所有者占用，或其工作区与配置不符，插件会自动绑定新的渠道会话并继续本条任务，不要求发送 `/new`，也不借用或释放其他所有者的 Agent。已失效的渠道 Agent 会被替换；主动 `/new` 仍等待清理后重置绑定。
 
 任务先进入 `running/phase=preparing`，图片准备完成后先持久化 `phase=agent` 再交给 DSH；正常完成后先 flush Session，再保存完整回复并按段发送。段号计入长度限制，每段有稳定 ID 和独立确认状态；正文不会被截断。重启后，尚在 preparing 的任务可使用原件、剩余下载次数和原截止时间继续准备；已进入 agent 阶段的任务不会自动重跑，系统会发送中断提示，并让该用户的后续任务使用新会话。已经保存但尚未发送的回复可以继续投递，已确认的段不会再次发送。
 
@@ -80,7 +82,7 @@ MVP1 入站支持文字＋图片：配文和多张图片按原顺序进入同一
 | `stateDirectory` | `$DSH_HOME/weixin`，必须为绝对路径。切换 bot 使用独立目录；已有数据库拒绝不同 bot 身份。 |
 | `workspaceRoot` | `run` 必填；现有绝对目录。 |
 | `allowedUsers` | `[]`，只接受扫码账号；非空时使用精确白名单。 |
-| `agentPreset` / `permissionPreset` | `standard` / `read-only`。 |
+| `agentPreset` / `permissionPreset` | `standard` / `danger-full-access`。 |
 | `provider` / `model` | 省略时使用 DSH 当前默认模型，新会话时解析。 |
 | `loginBaseUrl` | `https://ilinkai.weixin.qq.com`。 |
 | `allowedApiHosts` | `ilinkai.weixin.qq.com`、`ilinkai.wxqcloud.qq.com`；只允许精确主机名的 HTTPS origin，禁止 URL 凭据与 HTTP 重定向。新增后端域名必须由操作者明确加入。 |

@@ -4,17 +4,19 @@ import { Engine } from '../dist/engine.js';
 import { WeixinError } from '../dist/errors.js';
 import { fixture, auth, message, engineOptions, blocked, eventually } from './helpers.mjs';
 
-async function harness(t, { sendFailure = false, messages = [message()], respond } = {}) {
+async function harness(t, { sendFailure = false, messages = [message()], respond, session } = {}) {
   const { store, onCleanup } = await fixture(t);
+  if (session) store.bind('owner', session);
   const controller = new AbortController();
   const sent = [];
   const prompts = [];
   const logs = [];
   let polled = false;
   let closed = false;
+  let resets = 0;
   const driver = {
-    respond: async (user, text, signal) => { prompts.push(text); return respond ? respond(user, text, signal) : '模型回复'; },
-    reset: async user => store.forget(user), cancel() {}, close: async () => { closed = true; },
+    respond: async (user, text, signal) => { prompts.push(text); return respond ? respond(user, text, signal, store) : '模型回复'; },
+    reset: async user => { resets++; store.forget(user); }, cancel() {}, close: async () => { closed = true; },
   };
   const api = {
     updates: async (auth, cursor, signal) => {
@@ -26,7 +28,7 @@ async function harness(t, { sendFailure = false, messages = [message()], respond
   const task = new Engine(api, auth, store, driver, engineOptions, text => logs.push(text)).run(controller.signal);
   task.catch(() => {});
   onCleanup(async () => { controller.abort(); await task.catch(() => {}); });
-  return { store, controller, task, sent, prompts, logs, closed: () => closed };
+  return { store, controller, task, sent, prompts, logs, closed: () => closed, resets: () => resets };
 }
 
 test('inbound text reaches DSH once and returns through the matching context token', async t => {
@@ -57,11 +59,43 @@ test('unauthorized senders cannot run prompts or receive a reply', async t => {
   assert.deepEqual(h.prompts, []); assert.deepEqual(h.sent, []);
 });
 
-test('task failure returns actionable guidance and starts the next message in a new session', async t => {
-  const h = await harness(t, { respond: async () => { throw new WeixinError('AGENT', 'task', 'Fixture failure.'); } });
-  await eventually(() => h.sent.length === 1 && h.store.counts().pending === 0);
-  assert.match(h.sent[0].text, /未成功完成/u);
-  assert.equal(h.store.session('owner'), undefined);
+for (const failure of [new WeixinError('AGENT', 'task', 'Fixture failure.'), new Error('Brief runtime failure.'), new DOMException('Task timed out.', 'TimeoutError')]) {
+  test(`task failure retains the Session and lets the next message continue: ${failure.name}`, async t => {
+    const sessions = [];
+    const h = await harness(t, {
+      session: 'saved-session', messages: [message('1', 'first'), message('2', 'continue')],
+      respond: async (user, text, signal, store) => {
+        sessions.push(store.session(user));
+        if (text === 'first') throw failure;
+        return '继续处理';
+      },
+    });
+    await eventually(() => h.sent.length === 2 && h.store.counts().pending === 0);
+    const failed = h.sent.find(item => item.contextToken === 'context-1').text;
+    assert.match(failed, /未成功完成/u);
+    assert.match(failed, /DSH 日志/u);
+    assert.match(failed, /下一条消息仍可继续当前会话/u);
+    assert.doesNotMatch(failed, /新会话|\/new/u);
+    assert.deepEqual(sessions, ['saved-session', 'saved-session']);
+    assert.equal(h.store.session('owner'), 'saved-session');
+    assert.equal(h.resets(), 0);
+    assert.equal(h.sent.find(item => item.contextToken === 'context-2').text, '继续处理');
+  });
+}
+
+test('/new forgets the saved binding before the next task starts', async t => {
+  const h = await harness(t, {
+    session: 'saved-session', messages: [message('1', '/new'), message('2', 'new task')],
+    respond: async (user, text, signal, store) => {
+      assert.equal(store.session(user), undefined);
+      store.bind(user, 'fresh-session');
+      return '新任务完成';
+    },
+  });
+  await eventually(() => h.sent.length === 2 && h.store.counts().pending === 0);
+  assert.equal(h.resets(), 1);
+  assert.equal(h.store.session('owner'), 'fresh-session');
+  assert.match(h.sent.find(item => item.contextToken === 'context-1').text, /已开始新会话/u);
 });
 
 test('/stop is admitted by polling while DSH is still processing a previous message', async t => {
@@ -73,9 +107,11 @@ test('/stop is admitted by polling while DSH is still processing a previous mess
   let poll = 0;
   let running = false;
   let cancelledWhileRunning = false;
+  let resets = 0;
+  store.bind('owner', 'saved-session');
   const driver = {
     async respond() { running = true; started.resolve(); await cancelled.promise; running = false; throw new WeixinError('AGENT', 'task', 'Cancelled.'); },
-    async reset() {}, cancel() { if (running) { cancelledWhileRunning = true; cancelled.resolve(); } }, async close() {},
+    async reset(user) { resets++; store.forget(user); }, cancel() { if (running) { cancelledWhileRunning = true; cancelled.resolve(); } }, async close() {},
   };
   const api = {
     async updates(auth, cursor, signal) {
@@ -91,4 +127,8 @@ test('/stop is admitted by polling while DSH is still processing a previous mess
   await eventually(() => replies.length === 2);
   assert.equal(cancelledWhileRunning, true);
   assert.ok(replies.some(reply => /请求停止/u.test(reply)));
+  assert.ok(replies.some(reply => /下一条消息仍可继续当前会话/u.test(reply)));
+  assert.ok(replies.every(reply => !/新会话|\/new/u.test(reply)));
+  assert.equal(store.session('owner'), 'saved-session');
+  assert.equal(resets, 0);
 });
